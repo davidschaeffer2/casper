@@ -1,0 +1,5 @@
+/database
+config*
+/.idea
+/__pychache__
+/venv
