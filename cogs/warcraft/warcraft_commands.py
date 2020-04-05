@@ -1,12 +1,11 @@
 import asyncio
-from datetime import datetime
 from urllib import parse
 
 import discord
 from discord.ext import commands
 from cogs.warcraft.warcraft_character_iface import WarcraftCharacterInterface
 from cogs.warcraft.guild_defaults_iface import GuildDefaultsInterface
-from config import DiscordAPI, WarcraftAPI
+from config import WarcraftAPI
 import utilities
 
 
@@ -65,11 +64,7 @@ class Warcraft(commands.Cog):
                             raiderio_data, rank)
                 except Exception as e:
                     print(f'Error occurred when attempting to retrieve character data'
-                          f' during a guild crawl:\nGuild: '
-                          f'{guild_name.replace("-", "").title()}\n'
-                          f'Realm: {realm.replace("-", "").title()}-'
-                          f'{guild_region.upper()}\nCharacter: {name.title()}\n'
-                          f'ERROR: {e}')
+                          f' during a guild crawl:\nERROR: {e}')
             print('Finished auto crawl.')
             await asyncio.sleep(60 * 30)  # 60 seconds times 30 to sleep 30 mins
     # endregion
@@ -641,9 +636,9 @@ class Warcraft(commands.Cog):
         """
         token = await self.get_blizzard_access_token()
         if token is not None:
-            url = (f'https://{region.lower()}.api.blizzard.com/wow/character/'
-                   f'{realm.lower()}/{parse.quote(name).lower()}?'
-                   f'fields=guild,items,pvp,achievements,progression&locale=en_US'
+            url = (f'https://{region.lower()}.api.blizzard.com/profile/wow/character/'
+                   f'{realm.lower()}/{parse.quote(name).lower()}'
+                   f'f?namespace=profile-us&locale=en_US'
                    f'&access_token={token["access_token"]}')
             return await utilities.json_get(url)
         else:
@@ -690,9 +685,10 @@ class Warcraft(commands.Cog):
         token = await self.get_blizzard_access_token()
         if token is not None:
             try:
-                url = (f'https://{region.lower()}.api.blizzard.com/wow/guild/{realm.lower()}/'
-                       f'{parse.quote(guild_name.replace("-", " "))}'
-                       f'?fields=members&locale=en_US'
+                url = (f'https://{region.lower()}.api.blizzard.com/data/wow/guild/'
+                       f'{realm.lower()}/'
+                       f'{parse.quote(guild_name.lower().replace("-", " "))}'
+                       f'/roster?namespace=profile-us&locale=en_US'
                        f'&access_token={token["access_token"]}')
                 results = await utilities.json_get(url)
                 if results is None:
@@ -702,7 +698,7 @@ class Warcraft(commands.Cog):
                     if 'realm' in member['character'] and \
                             member['character']['level'] == 120:
                         members.append((member['character']['name'],
-                                        member['character']['realm'],
+                                        member['character']['realm']['slug'],
                                         member['rank']))
                 return members
             except AttributeError as e:
