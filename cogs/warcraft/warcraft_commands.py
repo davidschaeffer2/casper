@@ -2,6 +2,7 @@ import asyncio
 from urllib import parse
 
 import discord
+from datetime import datetime
 from discord.ext import commands
 from cogs.warcraft.warcraft_character_iface import WarcraftCharacterInterface
 from cogs.warcraft.guild_defaults_iface import GuildDefaultsInterface
@@ -50,23 +51,19 @@ class Warcraft(commands.Cog):
             guild_region = 'us'
             guild_members = await self.get_guild_members_from_blizzard(
                         guild_name, guild_realm, guild_region)
-            if guild_members is None:
-                print(f'An error occurred when attempting to retrieve guild members '
-                      f'for:\nGuild: {guild_name}\nRealm: {guild_realm}\n'
-                      f'Region: {guild_region}')
-                continue
-            for name, realm, rank in guild_members:
-                try:
+            try:
+                for name, realm, rank in guild_members:
                     raiderio_data = await self.get_raiderio_data(
                         name, realm, guild_region)
                     if raiderio_data is not None:
                         await WarcraftCharacterInterface.update_character(
                             raiderio_data, rank)
-                except Exception as e:
-                    print(f'Error occurred when attempting to retrieve character data'
-                          f' during a guild crawl:\nERROR: {e}')
-            print('Finished auto crawl.')
-            await asyncio.sleep(60 * 30)  # 60 seconds times 30 to sleep 30 mins
+                print(f'Finished auto crawl at {datetime.now()}.')
+            except Exception as e:
+                print(f'Error occurred when attempting to retrieve character data'
+                      f' during a guild crawl:\n{e}')
+            finally:
+                await asyncio.sleep(60 * 30)  # 60 seconds times 30 to sleep 30 mins
     # endregion
 
     # region Removes response and command invoke message
@@ -450,7 +447,7 @@ class Warcraft(commands.Cog):
             return await ctx.send('Please format your key info as:\n'
                                   '`casper addkey allikazam fh+18`')
         try:
-            key = self.dungeons[key_info.split('+')[0]]
+            key = self.dungeons[key_info.split('+')[0].lower()]
             key_level = int(key_info.split('+')[1])
         except Exception as e:
             print(f'Error occurred when parsing dungeon info:\n{e}')
@@ -690,6 +687,7 @@ class Warcraft(commands.Cog):
                        f'{parse.quote(guild_name.lower().replace("-", " "))}'
                        f'/roster?namespace=profile-us&locale=en_US'
                        f'&access_token={token["access_token"]}')
+                print(url)
                 results = await utilities.json_get(url)
                 if results is None:
                     return None
