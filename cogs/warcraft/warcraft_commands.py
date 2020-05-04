@@ -1,9 +1,10 @@
 import asyncio
-from urllib import parse
-
 import discord
 from datetime import datetime
 from discord.ext import commands
+from ratelimiter import RateLimiter
+from urllib import parse
+
 from cogs.warcraft.warcraft_character_iface import WarcraftCharacterInterface
 from cogs.warcraft.guild_defaults_iface import GuildDefaultsInterface
 from config import WarcraftAPI
@@ -45,25 +46,13 @@ class Warcraft(commands.Cog):
         :return: None
         """
         while not self.casper.is_closed():
-            print('Starting crawl.')
-            guild_name = 'Felforged'
-            guild_realm = 'wyrmrest-accord'
-            guild_region = 'us'
-            guild_members = await self.get_guild_members_from_blizzard(
-                        guild_name, guild_realm, guild_region)
-            try:
-                for name, realm, rank in guild_members:
-                    raiderio_data = await self.get_raiderio_data(
-                        name, realm, guild_region)
-                    if raiderio_data is not None:
-                        await WarcraftCharacterInterface.update_character(
-                            raiderio_data, rank)
-                print(f'Finished auto crawl at {datetime.now()}.')
-            except Exception as e:
-                print(f'Error occurred when attempting to retrieve character data'
-                      f' during a guild crawl:\n{e}')
-            finally:
-                await asyncio.sleep(60 * 30)  # 60 seconds times 30 to sleep 30 mins
+            print(f'Crawling all characters starting at {datetime.now()}.')
+            await self.crawl_all_characters()
+            print(f'Finished crawling all characters at {datetime.now()}.')
+            print(f'Crawling all guilds starting at {datetime.now()}.')
+            await self.crawl_all_guilds()
+            print(f'Finished crawling all guilds at {datetime.now()}.')
+            await asyncio.sleep(60*30)  # sleep for 30 minutes
     # endregion
 
     # region Removes response and command invoke message
@@ -687,7 +676,6 @@ class Warcraft(commands.Cog):
                        f'{parse.quote(guild_name.lower().replace("-", " "))}'
                        f'/roster?namespace=profile-us&locale=en_US'
                        f'&access_token={token["access_token"]}')
-                print(url)
                 results = await utilities.json_get(url)
                 if results is None:
                     return None
@@ -1047,6 +1035,43 @@ class Warcraft(commands.Cog):
                         f'(Since the start of Legion)'
                         f'```')
         return out_msg
+
+    async def crawl_all_characters(self):
+        rate_limiter = RateLimiter(max_calls=120, period=60)
+        with rate_limiter:
+            characters = await WarcraftCharacterInterface.get_all_characters()
+            try:
+                for i, character in enumerate(characters):
+                    raiderio_data = await self.get_raiderio_data(
+                        character.name, character.realm, character.region)
+                    if raiderio_data is not None:
+                        await WarcraftCharacterInterface.update_character(raiderio_data)
+                    else:
+                        await WarcraftCharacterInterface.remove_character(character)
+            except Exception as e:
+                print(f'Error occurred when attempting to retrieve character data during '
+                      f'mass crawl:\n{e}')
+
+    async def crawl_all_guilds(self):
+        guilds = await WarcraftCharacterInterface.get_guilds()
+        rate_limiter = RateLimiter(max_calls=120, period=60)
+        with rate_limiter:
+            for guild_name, guild_realm, guild_region in guilds:
+                if guild_name is not None:
+                    try:
+                        members = await self.get_guild_members_from_blizzard(
+                            guild_name, guild_realm, guild_region)
+                        if members is not None:
+                            for name, realm, rank in members:
+                                raiderio_data = await self.get_raiderio_data(
+                                    name, realm, guild_region)
+                                if raiderio_data is not None:
+                                    await WarcraftCharacterInterface.update_character(
+                                        raiderio_data, rank)
+                    except Exception as e:
+                        print(f'Error occurred during crawl of guild named '
+                              f'{guild_name.title()}\n{e}')
+                        continue
     # endregion
 
 
