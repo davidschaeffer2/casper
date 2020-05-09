@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from sqlalchemy import desc, asc
 
 from database.db_models import WarcraftCharacter
@@ -28,8 +30,12 @@ class WarcraftCharacterInterface:
             character.m_plus_prev_weekly_high = 0
         if raiderio_data['guild'] is not None:
             character.guild = raiderio_data['guild']['name'].replace(' ', '-').lower()
+        else:
+            character.guild = ''
         if rank is not None:
             character.guild_rank = rank
+        else:
+            character.rank = None
         character.char_class = raiderio_data['class'].lower()
         character.ilvl = raiderio_data['gear']['item_level_equipped']
         character.heart_of_azeroth_level = round(raiderio_data['gear']['artifact_traits'], 1)
@@ -48,6 +54,7 @@ class WarcraftCharacterInterface:
             character.m_plus_prev_weekly_high = raiderio_data['mythic_plus_previous_weekly_highest_level_runs'][0]['mythic_level']
         else:
             character.m_plus_prev_weekly_high = 0
+        character.last_updated = datetime.now()
         try:
             session.add(character)
             session.commit()
@@ -143,6 +150,7 @@ class WarcraftCharacterInterface:
         guilds = session.query(
             WarcraftCharacter.guild, WarcraftCharacter.realm, WarcraftCharacter.region
         ).distinct()
+        session.close()
         return guilds
 
     @classmethod

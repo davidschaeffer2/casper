@@ -1,9 +1,10 @@
 import asyncio
-from urllib import parse
-
 import discord
 from datetime import datetime
 from discord.ext import commands
+from ratelimiter import RateLimiter
+from urllib import parse
+
 from cogs.warcraft.warcraft_character_iface import WarcraftCharacterInterface
 from cogs.warcraft.guild_defaults_iface import GuildDefaultsInterface
 from config import WarcraftAPI
@@ -38,32 +39,64 @@ class Warcraft(commands.Cog):
     # region Looping Tasks
     async def auto_crawl(self):
         """
-        Auto-runs every hour. Gets a list of guilds from the database, fetches guild info
-        from Blizzard API and then fetches Raider.io data for each character found in
-        each guild. This data is then stored in the database.
+        Auto-runs every half hour. Calls two methods, crawl_all_characters and
+        crawl_all_guilds. The first ensures all characters are updated, the latter
+        ensures all guild members and guild ranks are crawled.
 
         :return: None
         """
         while not self.casper.is_closed():
-            print('Starting crawl.')
-            guild_name = 'Felforged'
-            guild_realm = 'wyrmrest-accord'
-            guild_region = 'us'
-            guild_members = await self.get_guild_members_from_blizzard(
-                        guild_name, guild_realm, guild_region)
+            print(f'Crawling all characters starting at {datetime.now()}.')
+            await self.crawl_all_characters()
+            print(f'Finished crawling all characters at {datetime.now()}.')
+            print(f'Crawling all guilds starting at {datetime.now()}.')
+            await self.crawl_all_guilds()
+            print(f'Finished crawling all guilds at {datetime.now()}.')
+            await asyncio.sleep(60*30)  # sleep for 30 minutes
+
+    async def crawl_all_characters(self):
+        """
+        Gets a list of all characters from the database and then pulls updated
+        information from raider.io. If the character cannot be fetched from raider.io,
+
+        :return: None
+        """
+        rate_limiter = RateLimiter(max_calls=120, period=60)
+        with rate_limiter:
+            characters = await WarcraftCharacterInterface.get_all_characters()
             try:
-                for name, realm, rank in guild_members:
+                for character in characters:
                     raiderio_data = await self.get_raiderio_data(
-                        name, realm, guild_region)
+                        character.name, character.realm, character.region)
                     if raiderio_data is not None:
-                        await WarcraftCharacterInterface.update_character(
-                            raiderio_data, rank)
-                print(f'Finished auto crawl at {datetime.now()}.')
+                        await WarcraftCharacterInterface.update_character(raiderio_data)
+                    elif abs((datetime.now() - character.last_updated)).days > 10:
+                        print(f'{character.name} removed for being old.')
+                        await WarcraftCharacterInterface.remove_character(character)
             except Exception as e:
-                print(f'Error occurred when attempting to retrieve character data'
-                      f' during a guild crawl:\n{e}')
-            finally:
-                await asyncio.sleep(60 * 30)  # 60 seconds times 30 to sleep 30 mins
+                print(f'Error occurred when attempting to retrieve character data during '
+                      f'mass crawl:\n{e}')
+
+    async def crawl_all_guilds(self):
+        guilds = await WarcraftCharacterInterface.get_guilds()
+        rate_limiter = RateLimiter(max_calls=120, period=60)
+        with rate_limiter:
+            for guild_name, guild_realm, guild_region in guilds:
+                if guild_name is not None:
+                    try:
+                        members = await self.get_guild_members_from_blizzard(
+                            guild_name, guild_realm, guild_region)
+                        if members is not None:
+                            for name, realm, rank in members:
+                                raiderio_data = await self.get_raiderio_data(
+                                    name, realm, guild_region)
+                                if raiderio_data is not None:
+                                    await WarcraftCharacterInterface.update_character(
+                                        raiderio_data, rank)
+                    except Exception as e:
+                        print(f'Error occurred during crawl of guild named '
+                              f'{guild_name.title()}\n{e}')
+                        continue
     # endregion
 
     # region Removes response and command invoke message
@@ -283,25 +316,6 @@ class Warcraft(commands.Cog):
             print(f'An error occurred when fetching token price:\n{e}')
             return await ctx.send('Could not fetch token price at this time. Please try '
                                   'again later.', delete_after=60)
-
-    @commands.command()
-    async def mplus(self, ctx, *, chars):
-        msg = await ctx.send('Fetching character data.')
-        defaults = await self.get_guild_defaults(ctx.guild.id)
-        try:
-            realm = defaults.warcraft_realm
-            region = defaults.warcraft_region
-        except AttributeError:
-            await self.react_to_message(ctx.message, False)
-            return await ctx.send(
-                'To remove a guild without specifying realm and region, default settings '
-                'must be set up using the command:\n'
-                '`casper warcraftdefaults guild-name realm-name region`\n'
-                'Otherwise, specify realm and region after the guild name.')
-        names = chars.split(' ')
-        out_msg = await self.build_mplus_msg(names, realm, region)
-        await self.react_to_message(ctx.message, True)
-        return await msg.edit(content=out_msg, delete_after=60)
     # endregion
 
     # region Leaves response and command invoke message
@@ -635,7 +649,26 @@ class Warcraft(commands.Cog):
         if token is not None:
             url = (f'https://{region.lower()}.api.blizzard.com/profile/wow/character/'
                    f'{realm.lower()}/{parse.quote(name).lower()}'
-                   f'f?namespace=profile-us&locale=en_US'
+                   f'?namespace=profile-us&locale=en_US'
+                   f'&access_token={token["access_token"]}')
+            return await utilities.json_get(url)
+        else:
+            return None
+
+    async def get_blizzard_achieve_data(self, name, realm, region):
+        """
+        Fetches character information from Blizzard API.
+
+        :param name: Character name
+        :param realm: Realm name, space are auto-sanitized
+        :param region: 2-letter abbreviation for region - US, EU, RU, KR
+        :return: Character information from Blizzard API if successful, otherwise None
+        """
+        token = await self.get_blizzard_access_token()
+        if token is not None:
+            url = (f'https://{region.lower()}.api.blizzard.com/profile/wow/character/'
+                   f'{realm.lower()}/{parse.quote(name).lower()}/achievements'
+                   f'?namespace=profile-us&locale=en_US'
                    f'&access_token={token["access_token"]}')
             return await utilities.json_get(url)
         else:
@@ -687,7 +720,6 @@ class Warcraft(commands.Cog):
                        f'{parse.quote(guild_name.lower().replace("-", " "))}'
                        f'/roster?namespace=profile-us&locale=en_US'
                        f'&access_token={token["access_token"]}')
-                print(url)
                 results = await utilities.json_get(url)
                 if results is None:
                     return None
@@ -921,7 +953,7 @@ class Warcraft(commands.Cog):
         avg_ilvl = round(total_ilvl/member_count)
         avg_heart = round(total_heart/member_count, 1)
         output += ('--------------------------------------------\n'
-                   f'{"Avg:":{14}}{avg_heart:<{10}}{avg_ilvl:<{6}}\n\n'
+                   f'{"Avg:":{14}}{avg_heart:<{15}}{avg_ilvl:<{6}}\n\n'
                    'Remember: You need to clear a +15 (not necessarily in time) '
                    'to maximize the loot from your weekly chest.```')
         return output
@@ -995,58 +1027,6 @@ class Warcraft(commands.Cog):
             return output
         else:
             return 'No keys found for this guild.'
-
-    async def build_mplus_msg(self, names, realm, region):
-        plus_2_achieve = 33096
-        wqs_50_complete = 33094
-        total_num_runs = 0
-        total_world_quests = 0
-        total_boss_kills = 0
-        out_msg = f'```{"Character":{14}}{"M+":<{5}}{"WQs":<{6}}{"Bosses":<{7}}\n\n'
-        token = await self.get_blizzard_access_token()
-        if token is not None:
-            for name in names:
-                char_mplus_runs = 0
-                char_wqs = 0
-                char_boss_kills = 0
-                results = await self.get_blizzard_data(name, realm, region)
-                achieves = results['achievements']
-                try:
-                    criteria_index = achieves['criteria'].index(plus_2_achieve)
-                    char_mplus_runs = achieves['criteriaQuantity'][criteria_index]
-                    total_num_runs += achieves['criteriaQuantity'][criteria_index]
-
-                    criteria_index = achieves['criteria'].index(wqs_50_complete)
-                    char_wqs = achieves['criteriaQuantity'][criteria_index]
-                    total_world_quests += achieves['criteriaQuantity'][criteria_index]
-
-                    current_raids = ['The Emerald Nightmare', 'Trial of Valor',
-                                     'The Nighthold', 'Tomb of Sargeras',
-                                     'Antorus, the Burning Throne',
-                                     'Uldir', 'Battle for Daza\'lor',
-                                     'Crucible of Storms', 'The Eternal Palace'
-                                     ]
-                    raid_results = [raid for raid in results['progression']['raids']
-                                    if raid['name'] in current_raids]
-                    for raid in raid_results:
-                        for boss in raid['bosses']:
-                            char_boss_kills += boss['lfrKills']
-                            char_boss_kills += boss['normalKills']
-                            char_boss_kills += boss['heroicKills']
-                            char_boss_kills += boss['mythicKills']
-                    total_boss_kills += char_boss_kills
-                    out_msg += (f'{name.title():{14}}{char_mplus_runs:<{5}}'
-                                f'{char_wqs:<{6}}{char_boss_kills:<{7}}\n')
-                except (KeyError, ValueError, TypeError) as e:
-                    print(f'An error occurred when fetching mplus data:\n{e}')
-                    out_msg += (f'{name.title():{14}}{"Err":<{5}}'
-                                f'{"Err":<{6}}{"Err":<{7}}\n')
-            out_msg += (f'---------------------------------\n'
-                        f'{"Total":{14}}{total_num_runs:<{5}}'
-                        f'{total_world_quests:<{6}}{total_boss_kills:<{7}}\n\n'
-                        f'(Since the start of Legion)'
-                        f'```')
-        return out_msg
     # endregion
 
 
