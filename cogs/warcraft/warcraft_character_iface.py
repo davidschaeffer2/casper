@@ -30,8 +30,12 @@ class WarcraftCharacterInterface:
             character.m_plus_prev_weekly_high = 0
         if raiderio_data['guild'] is not None:
             character.guild = raiderio_data['guild']['name'].replace(' ', '-').lower()
+        else:
+            character.guild = ''
         if rank is not None:
             character.guild_rank = rank
+        else:
+            character.rank = None
         character.char_class = raiderio_data['class'].lower()
         character.ilvl = raiderio_data['gear']['item_level_equipped']
         character.heart_of_azeroth_level = round(raiderio_data['gear']['artifact_traits'], 1)
