@@ -36,6 +36,10 @@ class Warcraft(commands.Cog):
             'wm': 'Waycrest Manor', 'sm': 'Waycrest Manor',
         }
 
+    @commands.command()
+    async def test(self, ctx):
+        ...
+
     # region Looping Tasks
     async def auto_crawl(self):
         """
@@ -62,10 +66,10 @@ class Warcraft(commands.Cog):
         :return: None
         """
         rate_limiter = RateLimiter(max_calls=120, period=60)
-        with rate_limiter:
-            characters = await WarcraftCharacterInterface.get_all_characters()
-            try:
-                for character in characters:
+        characters = await WarcraftCharacterInterface.get_all_characters()
+        try:
+            for character in characters:
+                async with rate_limiter:
                     raiderio_data = await self.get_raiderio_data(
                         character.name, character.realm, character.region)
                     if raiderio_data is not None:
@@ -73,30 +77,30 @@ class Warcraft(commands.Cog):
                     elif abs((datetime.now() - character.last_updated)).days > 10:
                         print(f'{character.name} removed for being old.')
                         await WarcraftCharacterInterface.remove_character(character)
-            except Exception as e:
-                print(f'Error occurred when attempting to retrieve character data during '
-                      f'mass crawl:\n{e}')
+        except Exception as e:
+            print(f'Error occurred when attempting to retrieve character data during '
+                  f'mass crawl:\n{e}')
 
     async def crawl_all_guilds(self):
         guilds = await WarcraftCharacterInterface.get_guilds()
         rate_limiter = RateLimiter(max_calls=120, period=60)
-        with rate_limiter:
-            for guild_name, guild_realm, guild_region in guilds:
-                if guild_name is not None:
-                    try:
-                        members = await self.get_guild_members_from_blizzard(
-                            guild_name, guild_realm, guild_region)
-                        if members is not None:
-                            for name, realm, rank in members:
+        for guild_name, guild_realm, guild_region in guilds:
+            if guild_name is not None:
+                try:
+                    members = await self.get_guild_members_from_blizzard(
+                        guild_name, guild_realm, guild_region)
+                    if members is not None:
+                        for name, realm, rank in members:
+                            async with rate_limiter:
                                 raiderio_data = await self.get_raiderio_data(
                                     name, realm, guild_region)
                                 if raiderio_data is not None:
                                     await WarcraftCharacterInterface.update_character(
                                         raiderio_data, rank)
-                    except Exception as e:
-                        print(f'Error occurred during crawl of guild named '
-                              f'{guild_name.title()}\n{e}')
-                        continue
+                except Exception as e:
+                    print(f'Error occurred during crawl of guild named '
+                          f'{guild_name.title()}\n{e}')
+                    continue
     # endregion
 
     # region Removes response and command invoke message
@@ -717,7 +721,7 @@ class Warcraft(commands.Cog):
             try:
                 url = (f'https://{region.lower()}.api.blizzard.com/data/wow/guild/'
                        f'{realm.lower()}/'
-                       f'{parse.quote(guild_name.lower().replace("-", " "))}'
+                       f'{parse.quote(guild_name.replace("-", " ")).lower()}'
                        f'/roster?namespace=profile-us&locale=en_US'
                        f'&access_token={token["access_token"]}')
                 results = await utilities.json_get(url)

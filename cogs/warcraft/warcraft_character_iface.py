@@ -17,7 +17,7 @@ class WarcraftCharacterInterface:
         :return: None
         """
         session = Session()
-        name = raiderio_data['name'].lower()
+        name = raiderio_data['name'].lower().title()
         realm = raiderio_data['realm'].replace(' ', '-').lower()
         region = raiderio_data['region'].lower()
         character = session.query(WarcraftCharacter).filter_by(
