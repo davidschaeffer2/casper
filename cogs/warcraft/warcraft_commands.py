@@ -74,7 +74,7 @@ class Warcraft(commands.Cog):
                         character.name, character.realm, character.region)
                     if raiderio_data is not None:
                         await WarcraftCharacterInterface.update_character(raiderio_data)
-                    elif abs((datetime.now() - character.last_updated)).days > 10:
+                    elif abs((datetime.now() - character.last_updated)).days > 30:
                         print(f'{character.name} removed for being old.')
                         await WarcraftCharacterInterface.remove_character(character)
         except Exception as e:
