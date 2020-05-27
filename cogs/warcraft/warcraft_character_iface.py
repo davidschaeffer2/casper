@@ -97,7 +97,8 @@ class WarcraftCharacterInterface:
         """
         session = Session()
         character = session.query(WarcraftCharacter).filter_by(
-            name=name.lower(), realm=realm.lower().replace(' ', '-'), region=region.lower()).first()
+            name=name.lower().title(), realm=realm.lower().replace(' ', '-'),
+            region=region.lower()).first()
         session.close()
         return character
 
