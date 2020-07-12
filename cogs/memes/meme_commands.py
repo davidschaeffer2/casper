@@ -47,12 +47,16 @@ class Memes(commands.Cog):
                 return await ctx.send(f'Your :petty: new :petty: message :petty: was '
                                       f':petty: too :petty: long :petty: to :petty: send.')
 
-    @commands.command(hidden=True)
+    @commands.command()
+    async def space(self, ctx, *, message: str = None):
+        return await ctx.send(' '.join(message))
+
+    @commands.command(hidden=True, aliases=['shame', 'hos'])
     async def hallofshame(self, ctx):
         hos = ['Nori', 'Bre', 'Lynndrae', 'Kessy', 'Sanguinara', 'MadMaddie', 'Zel',
                'Chinter', 'Krom', 'Aiirie', '<Redacted 1> - Fuck this one especially',
                '<Redacted 2>', 'Sana',
-               'Carver', 'Vel', 'Shadowkow', 'Egha', 'Sythas', 'Elia', 'Kerrigan',
+               'Carver', 'Shadowkow', 'Egha', 'Sythas', 'Elia', 'Kerrigan',
                'Incision', 'Saix', 'Arawn', 'Lienthunder']
         hos.sort()
         output = '\n'.join(hos)
