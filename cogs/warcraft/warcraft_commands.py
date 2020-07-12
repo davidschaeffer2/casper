@@ -6,7 +6,6 @@ from ratelimiter import RateLimiter
 from urllib import parse
 
 from cogs.warcraft.warcraft_character_iface import WarcraftCharacterInterface
-from cogs.warcraft.guild_defaults_iface import GuildDefaultsInterface
 from config import WarcraftAPI
 import utilities
 
@@ -14,6 +13,9 @@ import utilities
 class Warcraft(commands.Cog):
     def __init__(self, casper):
         self.casper = casper
+        self.guild_name = 'felforged'
+        self.guild_realm = 'wyrmrest-accord'
+        self.region = 'us'
         self.casper.loop.create_task(self.auto_crawl())
 
         self.blizzard_region_namespaces = {
@@ -24,21 +26,40 @@ class Warcraft(commands.Cog):
             'ad': 'Atal\'Dazar',
             'fh': 'Freehold',
             'kr': 'King\'s Rest',
-            'sots': 'Shrine of the Storm',
-            'sob': 'Siege of Boralus',
-            'tos': 'Temple of Sethraliss',
-            'mj': 'Mechagon - Junkyard',
-            'mw': 'Mechagon - Workshop',
+            'sots': 'Shrine of the Storm', 'shrine': 'Shrine of the Storm',
+            'sob': 'Siege of Boralus', 'siege': 'Siege of Boralus',
+            'tos': 'Temple of Sethraliss', 'temple': 'Temple of Sethraliss',
+            'mj': 'Mechagon - Junkyard', 'junk': 'Mechagon - Junkyard',
+            'jy': 'Mechagon - Junkyard',
+            'mw': 'Mechagon - Workshop', 'work': 'Mechagon - Workshop',
+            'ws': 'Mechagon - Workshop',
             'ml': 'The MOTHERLODE!',
-            'om': 'Outside Mechagon',
             'ur': 'The Underrot',
             'td': 'Tol Dagor',
             'wm': 'Waycrest Manor', 'sm': 'Waycrest Manor',
         }
+        self.sl_dungeons = {  # Dungeon Name: (usable abbreviations)
+            'The Necrotic Wake': ('tnw', 'nw', 'wake', 'necrotic'),
+            'Plaguefall': ('pf', 'plague', 'plaguefall'),
+            'Halls of Atonement': ('hoa', 'halls', 'atonement'),
+            'Theater of Pain': ('top', 'theater', 'pain'),
+            'The Other Side': ('tos', 'other'),
+            'Spires of Ascension': ('soa', 'spires', 'ascension'),
+            'Sanguine Depths': ('sd', 'sang', 'sanguine', 'depths')
+        }
 
     @commands.command()
-    async def test(self, ctx):
-        ...
+    async def test(self, ctx, value):
+        # parse SL dungeons for addkey
+        for abbreviations in self.sl_dungeons.items():
+            if value in abbreviations[1]:
+                return await ctx.send(abbreviations[0])
+        ###################################################
+
+    @commands.command()
+    async def gold(self, ctx):
+        return await ctx.send(f'Alli owes the guild bank 100,000 gold. But first he '
+                              f'needs a longboi.')
 
     # region Looping Tasks
     async def auto_crawl(self):
@@ -53,9 +74,9 @@ class Warcraft(commands.Cog):
             print(f'Crawling all characters starting at {datetime.now()}.')
             await self.crawl_all_characters()
             print(f'Finished crawling all characters at {datetime.now()}.')
-            print(f'Crawling all guilds starting at {datetime.now()}.')
-            await self.crawl_all_guilds()
-            print(f'Finished crawling all guilds at {datetime.now()}.')
+            print(f'Crawling Felforged starting at {datetime.now()}.')
+            await self.crawl_guild()
+            print(f'Finished crawling Felforged at {datetime.now()}.')
             await asyncio.sleep(60*30)  # sleep for 30 minutes
 
     async def crawl_all_characters(self):
@@ -81,113 +102,30 @@ class Warcraft(commands.Cog):
             print(f'Error occurred when attempting to retrieve character data during '
                   f'mass crawl:\n{e}')
 
-    async def crawl_all_guilds(self):
-        guilds = await WarcraftCharacterInterface.get_guilds()
+    async def crawl_guild(self):
         rate_limiter = RateLimiter(max_calls=120, period=60)
-        for guild_name, guild_realm, guild_region in guilds:
-            if guild_name is not None:
-                try:
-                    members = await self.get_guild_members_from_blizzard(
-                        guild_name, guild_realm, guild_region)
-                    if members is not None:
-                        for name, realm, rank in members:
-                            async with rate_limiter:
-                                raiderio_data = await self.get_raiderio_data(
-                                    name, realm, guild_region)
-                                if raiderio_data is not None:
-                                    await WarcraftCharacterInterface.update_character(
-                                        raiderio_data, rank)
-                except Exception as e:
-                    print(f'Error occurred during crawl of guild named '
-                          f'{guild_name.title()}\n{e}')
-                    continue
+        try:
+            members = await self.get_guild_members_from_blizzard(
+                self.guild_name, self.guild_realm, self.region)
+            if members is not None:
+                for name, realm, rank in members:
+                    async with rate_limiter:
+                        raiderio_data = await self.get_raiderio_data(
+                            name, realm, self.region)
+                        if raiderio_data is not None:
+                            await WarcraftCharacterInterface.update_character(
+                                raiderio_data, rank)
+        except Exception as e:
+            print(f'Error occurred during crawl Felforged:\n{e}')
     # endregion
 
     # region Removes response and command invoke message
     @commands.command()
-    async def warcraftdefaults(self, ctx, warcraft_guild, realm, region):
-        """
-        Gets the guild name, realm, and region set up as defaults for the discord server.
-
-        :param ctx: Discord.py invocation context. Used for sending messages.
-        :param warcraft_guild: Name of guild, space are auto-sanitized
-        :param realm: Name of realm, space are auto-sanitized
-        :param region: 2-letter abbreviation for region - US, EU, RU, KR
-        :return: A GuildDefaults object
-        """
-        if await GuildDefaultsInterface.update_guild_defaults(
-                ctx.guild.id, ctx.guild.name, warcraft_guild, realm, region):
-            await self.react_to_message(ctx.message, True)
-            return await ctx.send(f'Warcraft realm defaults updated:\n'
-                                  f'Guild: {warcraft_guild.replace("-"," ").title()}\n'
-                                  f'Realm: {realm.replace("-"," ").title()}\n'
-                                  f'Region: {region.upper()}')
-        else:
-            await self.react_to_message(ctx.message, False)
-            return await ctx.send(f'Warcraft defaults could not be updated.')
+    async def crawlguild(self):
+        return await self.crawl_guild()
 
     @commands.command()
-    async def crawlguild(self, ctx, guild=None, realm=None, region=None):
-        """
-        Fetches guild members of a guild via the Blizzard API.
-
-        :param ctx: Discord.py invocation context. Used for sending messages.
-        :param guild: Name of guild, space are auto-sanitized
-        :param realm: Name of realm, space are auto-sanitized
-        :param region: 2-letter abbreviation for region - US, EU, RU, KR
-        :return: Status message in the channel the command was used
-        """
-        # Can this be handled better instead of repeated in every command?
-        try:
-            if guild is None:
-                defaults = await self.get_guild_defaults(ctx.guild.id)
-                guild = defaults.warcraft_guild
-                realm = defaults.warcraft_realm
-                region = defaults.warcraft_region
-            elif realm is None or len(realm) < 3:
-                defaults = await self.get_guild_defaults(ctx.guild.id)
-                realm = defaults.warcraft_realm
-                region = defaults.warcraft_region
-            elif region is None:
-                defaults = await self.get_guild_defaults(ctx.guild.id)
-                region = defaults.warcraft_region
-        except AttributeError:
-            await self.react_to_message(ctx.message, False)
-            await ctx.send(
-                'To search a guild by name only, default settings must be '
-                'set up using the command:\n'
-                '`casper warcraftdefaults guild-name realm-name region`'
-                '\nPlease include realm-name and region or configure your '
-                'default settings.')
-        # See note above this block
-        msg = await ctx.send(f'Fetching data for {guild.replace("-", "").title()} on '
-                             f'{realm.replace("-", " ").title()}-{region.upper()}.')
-        guild_members = await self.get_guild_members_from_blizzard(guild, realm, region)
-        if guild_members is None:
-            print(f'An error occurred when attempting to retrieve guild members for:\n'
-                  f'Guild: {guild}\nRealm: {realm}\nRegion{region}.')
-            await msg.edit(content=f'An error occurred when attempting to retrieve'
-                                   f' guild members for '
-                                   f'{guild.replace("-", "").title()} on '
-                                   f'{realm.replace("-", "").title()}-{region.upper()}')
-        await msg.edit(content=f'Members retrieved. Updating records.')
-        for name, realm, rank in guild_members:
-            try:
-                raiderio_data = await self.get_raiderio_data(name, realm, region)
-                if raiderio_data is not None:
-                    await WarcraftCharacterInterface.update_character(raiderio_data, rank)
-            except Exception as e:
-                print(f'Error occurred when attempting to retrieve character data during '
-                      f'a guild crawl:\nGuild: {guild.replace("-", "").title()}\n'
-                      f'Realm: {realm.replace("-", "").title()}-{region.upper()}\n'
-                      f'Character: {name.title()}\n'
-                      f'ERROR: {e}')
-        await self.react_to_message(ctx.message, True)
-        await msg.edit(content='Finished crawl. Deleting message in 30 seconds.',
-                       delete_after=30)
-
-    @commands.command()
-    async def wow(self, ctx, name, realm=None, region=None):
+    async def wow(self, ctx, name, realm='wyrmrest-accord', region='us'):
         """
         Fetches character data from Raider.io API.
 
@@ -198,22 +136,6 @@ class Warcraft(commands.Cog):
         :return: A Discord Embed object populated with character data if successful,
         otherwise an error message.
         """
-        try:
-            if realm is None or len(realm) < 3:
-                defaults = await self.get_guild_defaults(ctx.guild.id)
-                realm = defaults.warcraft_realm
-                region = defaults.warcraft_region
-            elif region is None:
-                defaults = await self.get_guild_defaults(ctx.guild.id)
-                region = defaults.warcraft_region
-        except AttributeError:
-            await self.react_to_message(ctx.message, False)
-            return await ctx.send(
-                'To search a character by name only, default settings must be '
-                'set up using the command:\n'
-                '`casper warcraftdefaults guild-name realm-name region`'
-                '\nPlease include realm-name and region or configure your '
-                'default settings.')
         msg = await ctx.send(f'Fetching data for {name.title()} on '
                              f'{realm.title().replace("-", " ")}-'
                              f'{region.upper()}.')
@@ -249,28 +171,7 @@ class Warcraft(commands.Cog):
                                   delete_after=60)
 
     @commands.command()
-    async def guild(self, ctx, name=None, realm=None, region=None):
-        try:
-            if name is None:
-                defaults = await self.get_guild_defaults(ctx.guild.id)
-                name = defaults.warcraft_guild
-                realm = defaults.warcraft_realm
-                region = defaults.warcraft_region
-            elif realm is None or len(realm) < 3:
-                defaults = await self.get_guild_defaults(ctx.guild.id)
-                realm = defaults.warcraft_realm
-                region = defaults.warcraft_region
-            elif region is None:
-                defaults = await self.get_guild_defaults(ctx.guild.id)
-                region = defaults.warcraft_region
-        except AttributeError:
-            await self.react_to_message(ctx.message, False)
-            return await ctx.send(
-                'To search a guild without specifying the name, default settings must be '
-                'set up using the command:\n'
-                '`casper warcraftdefaults guild-name realm-name region`'
-                '\nPlease include guild-name, realm-name, and region or configure your '
-                'default settings.')
+    async def guild(self, ctx, name='felforged', realm='wyrmrest-accord', region='us'):
         msg = await ctx.send(f'Fetching data for {name.replace("-", " ").title()} on '
                              f'{realm.title().replace("-", " ")}-'
                              f'{region.upper()}.')
@@ -344,20 +245,12 @@ class Warcraft(commands.Cog):
                                   f'depicted on the armory. 0 for GM, 1 for Officers, '
                                   f'and so on to 7 separated by a comma:\n'
                                   f'Example: 0,2,4,5')
-        try:
-            defaults = await self.get_guild_defaults(ctx.guild.id)
-            guild = defaults.warcraft_guild
-            realm = defaults.warcraft_realm
-            region = defaults.warcraft_region
-        except AttributeError:
-            await self.react_to_message(ctx.message, False)
-            return await ctx.send(
-                'To fetch guild members, default settings must be set up using the '
-                'command:\n`casper warcraftdefaults guild-name realm-name region`')
-        msg = await ctx.send(f'Fetching members for {guild.replace("-", "").title()} '
-                             f'on {realm.replace("-", " ").title()}-{region.upper()}.')
+        msg = await ctx.send(f'Fetching members for '
+                             f'{self.guild_name.replace("-", "").title()} '
+                             f'on {self.guild_realm.replace("-", " ").title()}'
+                             f'-{self.region.upper()}.')
         guild_members = await WarcraftCharacterInterface.get_guild_members(
-            guild, realm, region, ranks)
+            self.guild_name, self.guild_realm, self.region, ranks)
         await msg.edit(content=f'Members found. Building layout.')
         output = await self.build_readycheck_msg(guild_members, sort_by)
         await self.react_to_message(ctx.message, True)
@@ -375,18 +268,9 @@ class Warcraft(commands.Cog):
         :return: An output with the scores of characters if successful, otherwise an error
          message
         """
-        try:
-            defaults = await self.get_guild_defaults(ctx.guild.id)
-            guild = defaults.warcraft_guild
-            realm = defaults.warcraft_realm
-            region = defaults.warcraft_region
-        except AttributeError:
-            await self.react_to_message(ctx.message, False)
-            return await ctx.send(
-                'To fetch guild members, default settings must be set up using the '
-                'command:\n`casper warcraftdefaults guild-name realm-name region`')
         msg = await ctx.send(f'Fetching scores for the top {num} characters in the guild.')
-        characters = await WarcraftCharacterInterface.get_guild_members(guild, realm, region)
+        characters = await WarcraftCharacterInterface.get_guild_members(
+            self.guild_name, self.guild_realm, self.region)
         await msg.edit(content=f'Building layout.')
         output = await self.build_scores_msg(characters, num)
         await self.react_to_message(ctx.message, True)
@@ -402,21 +286,12 @@ class Warcraft(commands.Cog):
         :param ranks: A comma-separated string of integer ranks to filter by
         :return: An output with the offending characters
         """
-        guild, realm, region = None, None, None
-        try:
-            defaults = await self.get_guild_defaults(ctx.guild.id)
-            guild = defaults.warcraft_guild
-            realm = defaults.warcraft_realm
-            region = defaults.warcraft_region
-        except AttributeError:
-            await self.react_to_message(ctx.message, False)
-            return await ctx.send(
-                'To fetch guild members, default settings must be set up using the '
-                'command:\n`casper warcraftdefaults guild-name realm-name region`')
-        msg = await ctx.send(f'Fetching members for {guild.replace("-", "").title()} '
-                             f'on {realm.replace("-", " ").title()}-{region.upper()}.')
+        msg = await ctx.send(f'Fetching members for '
+                             f'{self.guild_name.replace("-", "").title()} '
+                             f'on {self.guild_realm.replace("-", " ").title()}'
+                             f'-{self.region.upper()}.')
         guild_members = await WarcraftCharacterInterface.get_guild_members(
-            guild, realm, region, ranks)
+            self.guild_name, self.guild_realm, self.region, ranks)
         await msg.edit(content=f'Members found. Building layout.')
         output = await self.build_callout_msg(guild_members)
         await self.react_to_message(ctx.message, True)
@@ -430,18 +305,9 @@ class Warcraft(commands.Cog):
         :param ctx: Discord.py invocation context. Used for sending messages.
         :return: An output of mythic+ key information
         """
-        try:
-            defaults = await self.get_guild_defaults(ctx.guild.id)
-            guild = defaults.warcraft_guild
-            realm = defaults.warcraft_realm
-            region = defaults.warcraft_region
-        except AttributeError:
-            await self.react_to_message(ctx.message, False)
-            return await ctx.send(
-                'To fetch guild members, default settings must be set up using the '
-                'command:\n`casper warcraftdefaults guild-name realm-name region`')
         guild_keys_output = await self.build_guild_keys_msg(
-            await WarcraftCharacterInterface.get_guild_keys(guild, realm, region))
+            await WarcraftCharacterInterface.get_guild_keys(
+                self.guild_name, self.guild_realm, self.region))
         await self.react_to_message(ctx.message, True)
         return await ctx.send(guild_keys_output)
     # endregion
@@ -469,18 +335,12 @@ class Warcraft(commands.Cog):
             key_level = int(key_info.split('+')[1])
         except Exception as e:
             print(f'Error occurred when parsing dungeon info:\n{e}')
-            return await ctx.send('Please format your key info as:\n'
-                                  '`casper addkey allikazam fh+18`')
-        try:
-            defaults = await self.get_guild_defaults(ctx.guild.id)
-            realm = defaults.warcraft_realm
-            region = defaults.warcraft_region
-        except AttributeError:
-            await self.react_to_message(ctx.message, False)
-            return await ctx.send(
-                'To fetch guild members, default settings must be set up using the '
-                'command:\n`casper warcraftdefaults guild-name realm-name region`')
-        character = await WarcraftCharacterInterface.get_character(name, realm, region)
+            out_msg = 'Please use one of the following abbreviations for dungeons:\n'
+            for abb in self.dungeons.items():
+                out_msg += f'{abb[0]}: {abb[1]}\n'
+            return await ctx.send(out_msg, delete_after=60)
+        character = await WarcraftCharacterInterface.get_character(
+            name, self.guild_realm, self.region)
         if character is None:
             await self.react_to_message(ctx.message, False)
             return await ctx.send(f'Could not find character by name of: {name.title()}.')
@@ -498,15 +358,8 @@ class Warcraft(commands.Cog):
         if name is None:
             return await ctx.send('Please format your command as:\n'
                                   '`casper removekey allikazam`')
-        try:
-            defaults = await self.get_guild_defaults(ctx.guild.id)
-            realm = defaults.warcraft_realm
-            region = defaults.warcraft_region
-        except AttributeError:
-            return await ctx.send(
-                'To fetch guild members, default settings must be set up using the '
-                'command:\n`casper warcraftdefaults guild-name realm-name region`')
-        character = await WarcraftCharacterInterface.get_character(name, realm, region)
+        character = await WarcraftCharacterInterface.get_character(
+            name, self.guild_realm, self.region)
         if character is None:
             await self.react_to_message(ctx.message, False)
             return await ctx.send(f'Could not find character by name of: {name.title()}. '
@@ -535,15 +388,8 @@ class Warcraft(commands.Cog):
         :param name: Character name
         :return: A message with the outcome of the character removal
         """
-        try:
-            defaults = await self.get_guild_defaults(ctx.guild.id)
-            realm = defaults.warcraft_realm
-            region = defaults.warcraft_region
-        except AttributeError:
-            return await ctx.send(
-                'To fetch guild members, default settings must be set up using the '
-                'command:\n`casper warcraftdefaults guild-name realm-name region`')
-        character = await WarcraftCharacterInterface.get_character(name, realm, region)
+        character = await WarcraftCharacterInterface.get_character(
+            name, self.guild_realm, self.region)
         if character is None:
             await self.react_to_message(ctx.message, False)
             return await ctx.send(f'Could not find character by name of: {name.title()}.')
@@ -564,7 +410,7 @@ class Warcraft(commands.Cog):
         return await self.react_to_message(ctx.message, True)
 
     @commands.command()
-    async def removeguild(self, ctx, guild_name, realm=None, region=None):
+    async def removeguild(self, ctx, guild_name, realm='wyrmrest-accord', region='us'):
         """
         Used to remove guilds from the database that may no longer exist.
 
@@ -576,18 +422,6 @@ class Warcraft(commands.Cog):
         """
         if ctx.author.id != self.casper.owner_id:
             return
-        defaults = await self.get_guild_defaults(ctx.guild.id)
-        try:
-            if realm is None:
-                realm = defaults.warcraft_realm
-            if region is None:
-                region = defaults.warcraft_region
-        except AttributeError:
-            return await ctx.send(
-                'To remove a guild without specifying realm and region, default settings '
-                'must be set up using the command:\n'
-                '`casper warcraftdefaults guild-name realm-name region`\n'
-                'Otherwise, specify realm and region after the guild name.')
         guild_members = await WarcraftCharacterInterface.get_guild_members(
             guild_name, realm, region)
         if len(guild_members) == 0:
@@ -612,16 +446,6 @@ class Warcraft(commands.Cog):
         if is_successful:
             return await msg.add_reaction('\U00002705')  # white checkmark in green box
         return await msg.add_reaction('\U0000274c')  # red cross mark X
-
-    @staticmethod
-    async def get_guild_defaults(guild_id):
-        """
-        Fetches the guild defaults for a given discord server.
-
-        :param guild_id: The Discord server ID for the server where the command was called
-        :return: A GuildDefaults objects if successful, otherwise None
-        """
-        return await GuildDefaultsInterface.get_guild_defaults(guild_id)
 
     @staticmethod
     async def get_blizzard_access_token():
@@ -939,21 +763,13 @@ class Warcraft(commands.Cog):
             total_ilvl += character.ilvl
             total_heart += character.heart_of_azeroth_level
             member_count += 1
-            corruption = character.corruption_remaining
-            if 20 <= corruption < 40:
-                corruption = f'{corruption} *'
-            elif 40 <= corruption < 60:
-                corruption = f'{corruption} * *'
-            elif 60 <= corruption < 80:
-                corruption = f'{corruption} * * *'
-            elif corruption >= 80:
-                corruption = f'{corruption} SERIOUSLY'
             output += (f'{character.name.title():{14}}'
                        f'{character.heart_of_azeroth_level:<{6}}'
                        f'{character.m_plus_weekly_high:<{3}}'
                        f'| {character.m_plus_prev_weekly_high:<{4}}'
                        f'{character.ilvl:<{6}}'
-                       f'{character.cloak_rank:<{3}}| {corruption:<{3}}\n')
+                       f'{character.cloak_rank:<{3}}| '
+                       f'{character.corruption_remaining:<{3}}\n')
         avg_ilvl = round(total_ilvl/member_count)
         avg_heart = round(total_heart/member_count, 1)
         output += ('--------------------------------------------\n'
