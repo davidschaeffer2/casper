@@ -18,15 +18,17 @@ class CasperBot(commands.Bot):
     def __init__(self, *args, **kwargs):
         super().__init__(command_prefix=bot_prefix,
                          description=bot_description,
-                         opwner_id=DiscordAPI.OWNERID,
+                         owner_id=DiscordAPI.OWNERID,
                          *args, **kwargs)
 
         self.aiohttp_connector = aiohttp.TCPConnector(
-            limit=1,
+            limit=2,
             force_close=True,
             enable_cleanup_closed=True
         )
         self.aiohttp_session = aiohttp.ClientSession(connector=self.aiohttp_connector)
+
+        self.temp_shut_down = False
 
     @staticmethod
     async def on_ready():
@@ -65,6 +67,13 @@ class CasperBot(commands.Bot):
 casper_bot = CasperBot()
 
 
+@casper_bot.event
+async def on_message(message):
+    if casper_bot.temp_shut_down and message.author.id != casper_bot.owner_id:
+        return
+    await casper_bot.process_commands(message)
+
+
 @casper_bot.command(hidden=True)
 async def leave(ctx):
     if ctx.author.id == DiscordAPI.OWNERID:
@@ -89,6 +98,24 @@ async def thanks(ctx):
 @casper_bot.command(hidden=True)
 async def te(ctx):
     ...
+
+
+@casper_bot.command(hidden=True)
+async def shutdown(ctx):
+    if ctx.author.id == casper_bot.owner_id:
+        casper_bot.temp_shut_down = True
+        return await ctx.send('Shutting down.')
+    else:
+        return await ctx.send('No.')
+
+
+@casper_bot.command(hidden=True)
+async def comeback(ctx):
+    if ctx.author.id == casper_bot.owner_id:
+        casper_bot.temp_shut_down = False
+        return await ctx.send('I\'m here.')
+    else:
+        return await ctx.send('No.')
 
 
 if __name__ == '__main__':
