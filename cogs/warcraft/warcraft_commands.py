@@ -2,7 +2,7 @@ import asyncio
 import random
 import string
 from datetime import datetime
-from pprint import pprint
+from typing import List
 from urllib import parse
 
 import discord
@@ -10,8 +10,8 @@ from discord.ext import commands, tasks
 from ratelimiter import RateLimiter
 
 from utilities import Utilities
-from cogs.warcraft.warcraft_character_iface import WarcraftCharacterInterface
-from cogs.warcraft.weekly_gulld_runs_iface import WeeklyGuildRunsInterface
+from cogs.warcraft.db_interfaces.warcraft_character_iface import WarcraftCharacterInterface, WarcraftCharacter
+from cogs.warcraft.db_interfaces.weekly_gulld_runs_iface import WeeklyGuildRunsInterface
 from config import WarcraftAPI
 
 
@@ -190,6 +190,11 @@ class Warcraft(commands.Cog):
                 'fun" answer since what\'s fun for me is min/maxing the best performing '
                 'spec with my play time.\n\n- Top, probably​')
 
+    @commands.command()
+    async def maw(self, ctx):
+        await ctx.message.delete()
+        return await ctx.send('Your mount ignores your call in the maw.')
+
     # region Removes response after 5 minutes
     @commands.command()
     async def wow(self, ctx, name, realm='wyrmrest-accord', region='us'):
@@ -220,7 +225,7 @@ class Warcraft(commands.Cog):
             await WarcraftCharacterInterface.update_character(raiderio_data)
         except Exception as e:
             await self.react_to_message(ctx.message, False)
-            print(f'Error occurred during wow command character update:\n{e}')
+            print(f'Error occurred during wow command character update:\n{e.with_traceback()}')
             return await msg.edit(content='An error occurred when updating the '
                                           'character record. Sorry.', delete_after=300)
         await msg.edit(content=f'Records updated, building layout.')
@@ -235,44 +240,24 @@ class Warcraft(commands.Cog):
                                           f'layout. Sorry.', delete_after=300)
 
     @commands.command()
-    async def mplus(self, ctx, *, char_names=None):
+    async def weeklyruns(self, ctx, name, count=4):
         """
-        See how many m+ you've run since start of Legion
+        View all the weekly m+ runs done by a character.
 
-        :param ctx:
-        :param char_names:
-        :return:
+        :param ctx: Invoking context
+        :param name: Name of the character to look up
+        :param count: Max number of runs to return, default 4, max 10.
+        :return: An embed with dungeons sorted high to low
         """
-        if char_names is None:
-            await self.react_to_message(ctx.message, False)
-            return await ctx.send('You must provide at least one character name. You can '
-                                  'list multiple character names separated by a space.')
-        msg = await ctx.send(f'Fetching character data...')
-        out_msg = (f'```{"Name:":<{14}}{"M+ Run: (since Legion)":<{5}}\n'
-                   f'-------------------------------\n')
-        total = 0
+        runs = await WeeklyGuildRunsInterface.get_player_runs(name.lower())
+        if count > 10:
+            count = 10
         try:
-            for char in char_names.split(' '):
-                criteria_resp = await self.get_blizzard_achieve_statistics_data(
-                    char, 'wyrmrest-accord', 'us')
-                # Bro, this is gross
-                if criteria_resp is not None:
-                    for section in criteria_resp['categories']:
-                        if section['name'] == 'Dungeons & Raids':
-                            for subsection in section['statistics']:
-                                if subsection['id'] == 7399:
-                                    total += int(subsection["quantity"])
-                                    out_msg += (f'{char.title():<{14}}'
-                                                f'{int(subsection["quantity"])}\n')
-            out_msg += (f'-------------------------------\n'
-                        f'{"Total:":<{13}}{total:{5}}```')
+            embed = await self.build_weeklyruns_embed(name, runs, count)
             await self.react_to_message(ctx.message, True)
-            return await msg.edit(content=out_msg, delete_after=300)
-        except Exception as e:
-            print(f'Mplus command messed up:\n{e}')
+            return await ctx.send(embed=embed, delete_after=300)
+        except Exception:
             await self.react_to_message(ctx.message, False)
-            return await ctx.send('Sorry, an error occurred when collecting data.',
-                                  delete_after=300)
 
     @commands.command(aliases=['rc'])
     async def readycheck(self, ctx, sort_by='rank', ranks='0,1,3,6'):
@@ -304,6 +289,8 @@ class Warcraft(commands.Cog):
         await msg.edit(content=f'Members found. Building layout.')
         output = await self.build_readycheck_msg(guild_members, sort_by)
         await self.react_to_message(ctx.message, True)
+        if ctx.channel.id == 267749130829299729:
+            return await msg.edit(content=output)  # don't delete in officer channel
         return await msg.edit(content=output, delete_after=300)
 
     @commands.command()
@@ -444,22 +431,6 @@ class Warcraft(commands.Cog):
         return await msg.edit(content=output)
 
     @commands.command()
-    async def weeklyruns(self, ctx, name, count=4):
-        """
-        View all the weekly m+ runs done by a character.
-
-        :param ctx: Invoking context
-        :param name: Name of the character to look up
-        :param count: Max number of runs to return, default 4, max 10.
-        :return: An embed with dungeons sorted high to low
-        """
-        runs = await WeeklyGuildRunsInterface.get_player_runs(name.lower())
-        if count > 10:
-            count = 10
-        embed = await self.build_weeklyruns_embed(name, runs, count)
-        return await ctx.send(embed=embed)
-
-    @commands.command()
     async def keys(self, ctx):
         """
         Fetches a list of characters with mythic+ key information.
@@ -523,6 +494,7 @@ class Warcraft(commands.Cog):
 
     @commands.command()
     async def vault(self, ctx):
+        await self.react_to_message(ctx.message, True)
         return await ctx.send(
             'The weekly vault works as such:\n\n'
             'Running a single m+ rewards a single piece of gear based on the level of '
@@ -537,7 +509,7 @@ class Warcraft(commands.Cog):
             'If you run ten dungeons (first, get some help) at +3, +14, +10, +15, +15, '
             '+8, +12, +11, +15, +14, the first piece of gear will be a +15 piece, the '
             'second piece of gear will be a +14 piece, and the third piece of gear will '
-            'be a +3 piece.\n\n'
+            'be a +3 piece.\n\nhttps://i.imgur.com/6nxvCc6.png'
         )
     # endregion
 
@@ -574,6 +546,15 @@ class Warcraft(commands.Cog):
         for character in guild_members:
             await WarcraftCharacterInterface.remove_character(character)
         return await self.react_to_message(ctx.message, True)
+
+    @commands.command(hidden=True)
+    async def reset(self, ctx):
+        if (await WarcraftCharacterInterface.reset_keys() and
+                await WeeklyGuildRunsInterface.reset_runs()):
+            await ctx.send('Weekly reset, keys and weekly runs reset. Wish you '
+                           'good loot and stable connect!')
+        else:
+            await ctx.send('An error occurred when attempting weekly reset.')
     # endregion
 
     # region Cog Logic
@@ -627,26 +608,6 @@ class Warcraft(commands.Cog):
         else:
             return None
 
-    # TODO: UNUSED
-    async def get_blizzard_achieve_data(self, name, realm, region):
-        """
-        Fetches character information from Blizzard API.
-
-        :param name: Character name
-        :param realm: Realm name, space are auto-sanitized
-        :param region: 2-letter abbreviation for region - US, EU, RU, KR
-        :return: Character information from Blizzard API if successful, otherwise None
-        """
-        token = await self.get_blizzard_access_token()
-        if token is not None:
-            url = (f'https://{region.lower()}.api.blizzard.com/profile/wow/character/'
-                   f'{realm.lower()}/{parse.quote(name.title())}/achievements'
-                   f'?namespace=profile-us&locale=en_US'
-                   f'&access_token={token["access_token"]}')
-            return await Utilities(self.aiohttp_session).json_get(url)
-        else:
-            return None
-
     async def get_blizzard_achieve_statistics_data(self, name, realm, region):
         """
         Fetches character information from Blizzard API.
@@ -682,7 +643,7 @@ class Warcraft(commands.Cog):
                f'mythic_plus_recent_runs,mythic_plus_highest_level_runs,'
                f'mythic_plus_weekly_highest_level_runs,'
                f'mythic_plus_previous_weekly_highest_level_runs,'
-               f'mythic_plus_scores_by_season:current')
+               f'mythic_plus_scores_by_season:current,covenant')
         return await Utilities(self.aiohttp_session).json_get(url)
 
     async def get_raiderio_guild_data(self, name, realm, region):
@@ -715,8 +676,7 @@ class Warcraft(commands.Cog):
                     return None
                 members = []
                 for member in results['members']:
-                    if 'realm' in member['character'] and \
-                            (50 <= member['character']['level'] <= 60):
+                    if 'realm' in member['character'] and member['character']['level'] == 60:
                         members.append((member['character']['name'],
                                         member['character']['realm']['slug'],
                                         member['rank']))
@@ -756,19 +716,28 @@ class Warcraft(commands.Cog):
         if r['guild'] is not None:
             guild_name = f'<{r["guild"]["name"]}>'
 
-        # CHARACTER BASICS
+        # region CHARACTER BASICS
+        if r['covenant'] is not None:
+            covenant = r["covenant"]["name"]
+            renown = r["covenant"]["renown_level"]
+        else:
+            covenant = ''
+            renown = ''
         embed.add_field(
             name=f'{guild_name} {r["realm"]}-{r["region"].upper()}',
             value=(f'{r["race"]} {r["active_spec_name"]} {r["class"]}\n'
                    f'**ilvl:** {r["gear"]["item_level_equipped"]}\n'
+                   f'**Covenant:** {covenant}\n'
+                   f'Renown: {renown}\n'
                    f'[Armory](https://worldofwarcraft.com/en-us/character/'
                    f'{r["realm"].lower().replace(" ", "-")}/{r["name"].lower()}) - '
                    f'[Raider.io](https://raider.io/characters/{r["region"].lower()}'
                    f'/{r["realm"].lower().replace(" ", "-")}/{r["name"].lower()})'),
             inline=False
         )
+        # endregion
 
-        # RAID PROGRESSION
+        # region RAID PROGRESSION
         raids = r["raid_progression"]
         try:
             embed.add_field(
@@ -784,8 +753,9 @@ class Warcraft(commands.Cog):
                 value=(f'Could not fetch raid progression at this time.'),
                 inline=False
             )
+        # endregion
 
-        # MYTHIC+ PROGRESSION
+        # region MYTHIC+ PROGRESSION
         season_highs = r['mythic_plus_highest_level_runs']
         if len(season_highs) > 0:
             scores = r['mythic_plus_scores_by_season'][0]['scores']
@@ -844,6 +814,9 @@ class Warcraft(commands.Cog):
                 value='No mythic+ data exists for this character.',
                 inline=False
             )
+        # endregion
+        embed.set_footer(text='This message will be deleted after 5 mins.')
+
         return embed
 
     @staticmethod
@@ -899,7 +872,7 @@ class Warcraft(commands.Cog):
         return embed
 
     @staticmethod
-    async def build_readycheck_msg(guild_members, sort_by):
+    async def build_readycheck_msg(guild_members: List[WarcraftCharacter], sort_by):
         """
         Builds the readycheck layout.
 
@@ -923,31 +896,75 @@ class Warcraft(commands.Cog):
             guild_members = sorted(sorted(guild_members,
                                           key=lambda x: x.name),
                                    key=lambda x: x.m_plus_weekly_high, reverse=True)
-        elif sort_by == 'corruption':
+        elif sort_by == 'renown':
             guild_members = sorted(sorted(guild_members,
                                           key=lambda x: x.name),
-                                   key=lambda x: x.corruption_remaining, reverse=True)
+                                   key=lambda x: x.renown, reverse=True)
         total_ilvl = 0
         member_count = 0
-        output = (f'```{"Name:":{14}}|{"M+":{14}}|{"ilvl:":{6}}|\n'
-                  f'{"-"*14}+{"-"*14}+{"-"*6}|\n')
-        for character in guild_members:
-            total_ilvl += character.ilvl
+        # Table characters
+        col_sep = '│'
+        row_col_int = '┼'
+        row_sep = '─'
+        row_beg = '├'
+        row_sep_end = '┤'
+        row_end = '│'
+        # Column Widths
+        name_col_width = 14
+        mplus_col_width = 3
+        last_week_col_width = 3
+        num_runs_col_width = 3
+        ilvl_col_width = 5
+        cov_col_width = 10
+        renown_col_width = 6
+        total_width = (name_col_width + mplus_col_width + last_week_col_width +
+                       num_runs_col_width + cov_col_width + renown_col_width)
+        # HEADER
+        output = (
+            '```'
+            f'{"Name":<{name_col_width}}{col_sep}'
+            f'{"M+":<{mplus_col_width}}{col_sep}'
+            f'{"LW":<{last_week_col_width}}{col_sep}'
+            f'{"#":<{num_runs_col_width}}{col_sep}'
+            f'{"ilvl":<{ilvl_col_width}}{col_sep}'
+            f'{"Covenant":<{cov_col_width}}{col_sep}'
+            f'{"Renown":<{renown_col_width}}{row_end}\n'
+            f'{row_sep*name_col_width}{row_col_int}{row_sep*mplus_col_width}{row_col_int}'
+            f'{row_sep*last_week_col_width}{col_sep}{row_sep*num_runs_col_width}{col_sep}'
+            f'{row_sep*ilvl_col_width}{row_col_int}{row_sep*cov_col_width}{row_col_int}'
+            f'{row_sep*renown_col_width}{row_sep_end}\n'
+        )
+        # BODY
+        for char in guild_members:
+            total_ilvl += char.ilvl
             member_count += 1
-            num_runs = len(await WeeklyGuildRunsInterface.get_player_runs(character.name.title()))
-            output += (f'{character.name.title():{14}}|'
-                       f'{character.m_plus_weekly_high:<{3}}'
-                       f'/ {character.m_plus_prev_weekly_high:<{4}}'
-                       f'/ {num_runs:<{3}}|'
-                       f'{character.ilvl:<{6}}|\n')
+            num_runs = len(await WeeklyGuildRunsInterface.get_player_runs(char.name.lower()))
+            output += (
+                f'{char.name.title():{name_col_width}}{col_sep}'
+                f'{char.m_plus_weekly_high:<{mplus_col_width}}{col_sep}'
+                f'{char.m_plus_prev_weekly_high:<{last_week_col_width}}{col_sep}'
+                f'{num_runs:<{num_runs_col_width}}{col_sep}'
+                f'{char.ilvl:<{5}}{col_sep}'
+                f'{char.covenant:<{cov_col_width}}{col_sep}'
+                f'{char.renown:<{renown_col_width}}{row_end}\n'
+            )
         avg_ilvl = round(total_ilvl/member_count)
-        output += (f'{"-"*14}+{"-"*14}+{"-"*6}|\n'
-                   f'{"Avg:":{14}}|{"":{14}}|{avg_ilvl:<{6}}|\n\n'
-                   'Remember:\n'
-                   ' - You need to clear a +15 (not necessarily in time) '
-                   'to maximize the loot from your weekly chest\n'
-                   ' - Weekly vault rewards an extra piece of gear after 1, 4, 10 runs\n'
-                   ' - Use the command `casper vault` for more info```')
+        # BOTTOM ROW
+        output += (
+            f'{row_sep*name_col_width}{row_col_int}{row_sep*mplus_col_width}{row_col_int}'
+            f'{row_sep*last_week_col_width}{row_col_int}{row_sep*num_runs_col_width}{row_col_int}'
+            f'{row_sep*ilvl_col_width}{row_col_int}{row_sep*cov_col_width}{row_col_int}'
+            f'{row_sep*renown_col_width}{row_sep_end}\n'
+            f'{"Avg:":{name_col_width}}{col_sep}'
+            f'{"":{mplus_col_width+last_week_col_width+num_runs_col_width+2}}{col_sep}'
+            f'{avg_ilvl:<{ilvl_col_width+cov_col_width+renown_col_width+2}}{row_end}\n\n'
+            'Remember:\n'
+            ' - You need to clear a +15 (not necessarily in time) '
+            'to maximize the loot from your weekly chest\n'
+            ' - Weekly vault rewards an extra piece of gear after 1, 4, 10 runs\n'
+            ' - Use the command `casper vault` for more info\n'
+            'This message will be deleted after 5 mins.```'
+        )
         return output
 
     @staticmethod
@@ -955,15 +972,17 @@ class Warcraft(commands.Cog):
         embed = discord.Embed()
         embed.title = f'__{name.title()}__'
         runs = sorted(runs, key=lambda x: x.dungeon_level, reverse=True)
-        if len(runs) == 0:
+        total_runs = len(runs)
+        if total_runs == 0:
             embed.add_field(name='No runs found for this week.',
                             value='Make sure the run shows on your r.io page.')
             return embed
+        remaining_runs = total_runs
         for i, run in enumerate(runs):
             if i < count:
                 if i+1 == 1:
                     embed.add_field(
-                        name=f'{i+1}. (1st piece of loot) {run.dungeon_name} '
+                        name=f'\U00002b50 {i+1}) {run.dungeon_name}'
                         f'+{run.dungeon_level}',
                         value=(f'https://raider.io/mythic-plus-runs/season-bfa-4-post/'
                                f'{run.run_id}'),
@@ -971,7 +990,7 @@ class Warcraft(commands.Cog):
                     )
                 elif i+1 == 4:
                     embed.add_field(
-                        name=f'{i+1}. (2nd piece of loot) {run.dungeon_name} '
+                        name=f'\U00002b50 {i+1}) {run.dungeon_name}'
                         f'+{run.dungeon_level}',
                         value=(f'https://raider.io/mythic-plus-runs/season-bfa-4-post/'
                                f'{run.run_id}'),
@@ -979,7 +998,7 @@ class Warcraft(commands.Cog):
                     )
                 elif i+1 == 10:
                     embed.add_field(
-                        name=f'{i+1}. (3rd piece of loot) {run.dungeon_name} '
+                        name=f'\U00002b50 {i+1}) {run.dungeon_name}'
                         f'+{run.dungeon_level}',
                         value=(f'https://raider.io/mythic-plus-runs/season-bfa-4-post/'
                                f'{run.run_id}'),
@@ -987,12 +1006,18 @@ class Warcraft(commands.Cog):
                     )
                 else:
                     embed.add_field(
-                            name=f'{i+1}. {run.dungeon_name} '
+                            name=f'{i+1}) {run.dungeon_name} '
                             f'+{run.dungeon_level}',
                             value=(f'https://raider.io/mythic-plus-runs/season-bfa-4-post/'
                                    f'{run.run_id}'),
                             inline=False
                         )
+                remaining_runs -= 1
+        embed.add_field(
+            name=f'There are {remaining_runs} runs not shown.',
+            value='Type `casper weeklyruns yourname 10` to see your top 10 runs.'
+        )
+        embed.set_footer(text='This message will be deleted after 5 mins.')
         return embed
 
     @staticmethod
@@ -1024,6 +1049,7 @@ class Warcraft(commands.Cog):
             place = temp_place
             if place == num:
                 break
+        embed.set_footer(text='This message will be deleted after 5 mins.')
         return embed
 
     @staticmethod
@@ -1039,7 +1065,7 @@ class Warcraft(commands.Cog):
         guild_members = sorted(sorted(guild_members,
                                       key=lambda x: x.name),
                                key=lambda x: x.m_plus_weekly_high)
-        output = '__**These people have not run a M+15 or higher this week:**__\n\n```'
+        output = '__**These people have not run a M+14 or higher this week:**__\n\n```'
         if len(guild_members) > 0:
             output += (f'{"Name:":<{14}}{"Weekly High:":<{3}}\n'
                        f'--------------------------------------------\n')
@@ -1050,7 +1076,7 @@ class Warcraft(commands.Cog):
                        'Remember: You need to clear a +15 (not necessarily in time) '
                        'to maximize the loot from your weekly chest.```')
             return output
-        return 'Congratulations, everyone has run a M+15 or higher this week!'
+        return 'Congratulations, everyone has run a M+14 or higher this week!'
 
     @staticmethod
     async def build_guild_keys_msg(guild_members):

@@ -1,7 +1,7 @@
 import decimal
 
 from discord.ext import commands
-from cogs.fitness.fitness_iface import FitnessUserInterface
+from cogs.fitness.db_interfaces.fitness_iface import FitnessUserInterface
 
 
 class Fitness(commands.Cog):

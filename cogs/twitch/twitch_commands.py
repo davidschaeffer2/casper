@@ -3,15 +3,13 @@ from pprint import pprint
 
 import aiohttp
 import discord
-import random
-import string
 
-from cogs.twitch.twitch_iface import TwitchDBInterface as TwitchIface
+from cogs.twitch.db_interfaces.twitch_iface import TwitchDBInterface as TwitchIface
 from config import TwitchAPI
 from configparser import ConfigParser
 from datetime import datetime
-from typing import NoReturn
-from discord.ext import commands
+from discord.ext import commands, tasks
+from utilities import Utilities as Utils
 
 
 class Twitch(commands.Cog):
@@ -23,18 +21,14 @@ class Twitch(commands.Cog):
 
         self.aiohttp_session = casper.aiohttp_session
 
-        #self.casper.loop.create_task(self.check_for_streams())
+        @tasks.loop(seconds=60)
+        async def check_for_streams():
+            """
+            Polls Twitch every 60 seconds for stream status for registered Twitch streamers
 
-        self.polling_rate = 30
-
-    async def check_for_streams(self) -> NoReturn:
-        """
-        Polls Twitch every 60 seconds for stream status for registered Twitch streamers
-
-        :return: None
-        """
-        ch_sims_and_logs = self.casper.get_channel(307655779056484353)
-        while not self.casper.is_closed():
+            :return: None
+            """
+            ch_sims_and_logs = self.casper.get_channel(307655779056484353)
             print(f'=============================================\n'
                   f'Crawling streams at {datetime.now()}...')
             channels = await TwitchIface.get_all_channels()
@@ -52,14 +46,15 @@ class Twitch(commands.Cog):
                         if await TwitchIface.set_is_live(ch.username, True):
                             game_name = await self.get_twitch_game_name(stream[0]['game_id'])
                             embed = await self.create_new_live_stream_embed(
-                                stream[0], game_name, True)
+                                stream[0], game_name)
                             await ch_sims_and_logs.send(embed=embed)
             except Exception as e:
                 print(f'Weird error?\n{e}')
                 pass
             print(f'Finished crawling streams.\n'
                   f'=============================================')
-            await asyncio.sleep(self.polling_rate)
+
+        check_for_streams.start()
 
     @commands.command()
     async def addtwitch(self, ctx, username: str) -> discord.Message:
@@ -156,14 +151,17 @@ class Twitch(commands.Cog):
 
     async def get_twitch_access_token(self):
         access_token = self.config.get('twitch_api', 'access_token')
+        headers = {'Client-ID': TwitchAPI.CLIENT_ID}
         if not await self.access_token_is_valid(access_token):
             print(f'Twitch access token is not valid: {access_token}\n'
                   f'Fetching new Twitch access token...')
-            resp = await self.json_post(TwitchAPI.APP_ACCESS_TOKEN_URL)
-            while resp is None:
+            resp = await Utils(self.aiohttp_session).resp_get(
+                TwitchAPI.APP_ACCESS_TOKEN_URL, headers=headers)
+            while resp.status != 200:
                 print('Cannot fetch new access token, retrying in 30 seconds')
                 await asyncio.sleep(30)
-                resp = await self.json_post(TwitchAPI.APP_ACCESS_TOKEN_URL)
+                resp = await Utils(self.aiohttp_session).resp_get(
+                    TwitchAPI.APP_ACCESS_TOKEN_URL, headers=headers)
             access_token = resp['access_token']
             self.config.set('twitch_api', 'access_token', access_token)
             with open('config.ini', 'w') as configfile:
@@ -172,38 +170,37 @@ class Twitch(commands.Cog):
             return access_token
         return access_token
 
-    @staticmethod
-    async def access_token_is_valid(access_token):
+    async def access_token_is_valid(self, access_token):
         validation_url = 'https://id.twitch.tv/oauth2/validate'
         headers = {'Authorization': f'OAuth {access_token}'}
-        async with aiohttp.ClientSession(headers=headers) as session:
-            try:
-                async with session.get(validation_url) as resp:
-                    if resp.status == 200:
-                        return True
-                    else:
-                        return False
-            except aiohttp.ClientConnectionError as e:
-                print(f'An error occurred while fetching data from '
-                      f'{TwitchAPI.APP_ACCESS_TOKEN_URL}:\n{e}')
-                return False
+        resp = await Utils(self.aiohttp_session).resp_get(validation_url, headers=headers)
+        if resp.status == 200:
+            return True
+        return False
 
     async def get_twitch_channel_status(self, username: str):
-        url_base = f'https://api.twitch.tv/helix/streams?'
-        url_params = f'user_login={username}'
-        return await self.json_get(url_base + url_params)
+        access_token = await self.get_twitch_access_token()
+        if access_token:
+            headers = {'Client-ID': TwitchAPI.CLIENT_ID,
+                       'Authorization': f'Bearer {access_token}'}
+            url = f'https://api.twitch.tv/helix/streams?user_login={username}'
+            resp = await Utils(self.aiohttp_session).json_get(url, headers=headers)
+            return resp
 
     async def get_twitch_game_name(self, twitch_game_id):
-        url_base = f'https://api.twitch.tv/helix/games?'
-        url_params = f'id={twitch_game_id}'
-        resp = await self.json_get(url_base + url_params)
-        try:
-            return resp['data'][0]['name']
-        except IndexError as e:
-            print(f'Get game name failed:\n{e}')
-            return ''
+        access_token = await self.get_twitch_access_token()
+        if access_token:
+            headers = {'Client-ID': TwitchAPI.CLIENT_ID,
+                       'Authorization': f'Bearer {access_token}'}
+            url = f'https://api.twitch.tv/helix/games?id={twitch_game_id}'
+            resp = await Utils(self.aiohttp_session).json_get(url, headers=headers)
+            try:
+                return resp['data'][0]['name']
+            except IndexError as e:
+                print(f'Get game name failed:\n{e}')
+                return ''
 
-    async def create_new_live_stream_embed(self, stream: dict, game_name, is_owner):
+    async def create_new_live_stream_embed(self, stream: dict, game_name):
         embed = discord.Embed(url=f'https://www.twitch.tv/{stream["user_name"]}')
         user_data = await self.get_twitch_user_data(stream['user_name'])
         profile_image = user_data['profile_image_url']
@@ -218,10 +215,16 @@ class Twitch(commands.Cog):
         return embed
 
     async def get_twitch_user_data(self, login_name):
-        url_base = f'https://api.twitch.tv/helix/users?'
-        url_params = f'login={login_name}'
-        resp = await self.json_get(url_base + url_params)
-        return resp['data'][0]
+        access_token = await self.get_twitch_access_token()
+        if access_token:
+            headers = {'Client-ID': TwitchAPI.CLIENT_ID,
+                       'Authorization': f'Bearer {access_token}'}
+            url = f'https://api.twitch.tv/helix/users?login={login_name}'
+            resp = await Utils(self.aiohttp_session).json_get(url, headers=headers)
+            try:
+                return resp['data'][0]
+            except TypeError as e:
+                return None
 
 
 def setup(casper):
