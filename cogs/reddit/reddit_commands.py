@@ -50,10 +50,10 @@ class Reddit(commands.Cog):
                 try:
                     # If we don't get the NotFound error, it's a valid subreddit.
                     subreddit = self.reddit.subreddits.search_by_name(name, exact=True)
-                    output_str += f'<https://old.reddit.com/r/{name}>\n'
+                    output_str += f'<https://www.reddit.com/r/{name}>\n'
                 except prawcore.NotFound:
                     # Invalid subreddit, skip to next name in list.
-                    output_str += f'"{name}" is not a subreddit.'
+                    output_str += f'"{name}" is not a subreddit.\n'
             return await message.channel.send(
                 f'{output_str}')
         return

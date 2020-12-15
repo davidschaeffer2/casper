@@ -1,4 +1,5 @@
 from datetime import datetime
+from urllib import parse
 
 from sqlalchemy import desc, asc
 
@@ -17,7 +18,7 @@ class WarcraftCharacterInterface:
         :return: None
         """
         session = Session()
-        name = raiderio_data['name'].lower().title()
+        name = raiderio_data['name'].lower()
         realm = raiderio_data['realm'].replace(' ', '-').lower()
         region = raiderio_data['region'].lower()
         character = session.query(WarcraftCharacter).filter_by(
@@ -38,11 +39,6 @@ class WarcraftCharacterInterface:
             character.rank = None
         character.char_class = raiderio_data['class'].lower()
         character.ilvl = raiderio_data['gear']['item_level_equipped']
-        character.heart_of_azeroth_level = round(raiderio_data['gear']['artifact_traits'], 1)
-        if 'corruption' in raiderio_data['gear']:
-            character.cloak_rank = raiderio_data['gear']['corruption']['cloakRank']
-            character.corruption_total = raiderio_data['gear']['corruption']['added']
-            character.corruption_remaining = raiderio_data['gear']['corruption']['total']
         character.m_plus_score_overall = raiderio_data['mythic_plus_scores_by_season'][0]['scores']['all']
         character.m_plus_rank_overall = raiderio_data['mythic_plus_ranks']['overall']['realm']
         character.m_plus_rank_class = raiderio_data['mythic_plus_ranks']['class']['realm']
@@ -97,7 +93,7 @@ class WarcraftCharacterInterface:
         """
         session = Session()
         character = session.query(WarcraftCharacter).filter_by(
-            name=name.lower().title(), realm=realm.lower().replace(' ', '-'),
+            name=name.lower(), realm=realm.lower().replace(' ', '-'),
             region=region.lower()).first()
         session.close()
         return character
@@ -230,10 +226,13 @@ class WarcraftCharacterInterface:
             char.m_plus_key = None
             char.m_plus_key_level = None
             session.add(char)
+        success = False
         try:
             session.commit()
+            success = True
         except Exception as e:
             print(f'An error occurred when resetting keys.\n{e}')
             session.rollback()
         finally:
             session.close()
+            return success

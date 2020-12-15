@@ -217,8 +217,9 @@ class Fitness(commands.Cog):
         output_str = await self.build_progress_msg(ctx)
         return await ctx.send(output_str)
 
-    @commands.command()
+    @commands.command(hidden=True)
     async def leaderboards(self, ctx, sort=None):
+        # TODO: Implement
         sort = sort.lower()
         if sort is None:
             return await ctx.send('How do you want to sort the leaderboard?\n'

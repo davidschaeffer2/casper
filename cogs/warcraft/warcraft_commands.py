@@ -1,13 +1,18 @@
 import asyncio
-import discord
+import random
+import string
 from datetime import datetime
-from discord.ext import commands
-from ratelimiter import RateLimiter
+from pprint import pprint
 from urllib import parse
 
+import discord
+from discord.ext import commands, tasks
+from ratelimiter import RateLimiter
+
+from utilities import Utilities
 from cogs.warcraft.warcraft_character_iface import WarcraftCharacterInterface
+from cogs.warcraft.weekly_gulld_runs_iface import WeeklyGuildRunsInterface
 from config import WarcraftAPI
-import utilities
 
 
 class Warcraft(commands.Cog):
@@ -16,114 +21,176 @@ class Warcraft(commands.Cog):
         self.guild_name = 'felforged'
         self.guild_realm = 'wyrmrest-accord'
         self.region = 'us'
-        self.casper.loop.create_task(self.auto_crawl())
+
+        self.aiohttp_session = casper.aiohttp_session
 
         self.blizzard_region_namespaces = {
             'us': 'en_US', 'eu': 'en_GB', 'kr': 'ko_KR', 'ru': 'ru_RU', 'tw': 'zh_TW',
             'sea': 'en_SG'
         }
-        self.dungeons = {
-            'ad': 'Atal\'Dazar',
-            'fh': 'Freehold',
-            'kr': 'King\'s Rest',
-            'sots': 'Shrine of the Storm', 'shrine': 'Shrine of the Storm',
-            'sob': 'Siege of Boralus', 'siege': 'Siege of Boralus',
-            'tos': 'Temple of Sethraliss', 'temple': 'Temple of Sethraliss',
-            'mj': 'Mechagon - Junkyard', 'junk': 'Mechagon - Junkyard',
-            'jy': 'Mechagon - Junkyard',
-            'mw': 'Mechagon - Workshop', 'work': 'Mechagon - Workshop',
-            'ws': 'Mechagon - Workshop',
-            'ml': 'The MOTHERLODE!',
-            'ur': 'The Underrot',
-            'td': 'Tol Dagor',
-            'wm': 'Waycrest Manor', 'sm': 'Waycrest Manor',
-        }
         self.sl_dungeons = {  # Dungeon Name: (usable abbreviations)
-            'The Necrotic Wake': ('tnw', 'nw', 'wake', 'necrotic'),
+            'De Other Side': ('dos', 'tos', 'deother', 'other', 'otherside'),
+            'Halls of Atonement': ('hoa', 'halls', 'atonement', 'atone'),
+            'Mists of Tirna Scithe': ('mots', 'mists', 'tirna', 'scithe'),
             'Plaguefall': ('pf', 'plague', 'plaguefall'),
-            'Halls of Atonement': ('hoa', 'halls', 'atonement'),
-            'Theater of Pain': ('top', 'theater', 'pain'),
-            'The Other Side': ('tos', 'other'),
             'Spires of Ascension': ('soa', 'spires', 'ascension'),
-            'Sanguine Depths': ('sd', 'sang', 'sanguine', 'depths')
+            'Sanguine Depths': ('sd', 'sang', 'sanguine', 'depths'),
+            'The Necrotic Wake': ('tnw', 'nw', 'wake', 'necrotic'),
+            'Theater of Pain': ('top', 'theater', 'pain'),
         }
 
-    @commands.command()
-    async def test(self, ctx, value):
-        # parse SL dungeons for addkey
-        for abbreviations in self.sl_dungeons.items():
-            if value in abbreviations[1]:
-                return await ctx.send(abbreviations[0])
-        ###################################################
+        async def crawl_all_characters():
+            """
+            Gets a list of all characters from the database and then pulls updated
+            information from raider.io. If the character cannot be fetched from raider.io,
 
-    @commands.command()
-    async def gold(self, ctx):
-        return await ctx.send(f'Alli owes the guild bank 100,000 gold. But first he '
-                              f'needs a longboi.')
+            :return: None
+            """
+            rate_limiter = RateLimiter(max_calls=120, period=60)
+            characters = await WarcraftCharacterInterface.get_all_characters()
+            if len(characters) > 0:
+                for character in characters:
+                    try:
+                        async with rate_limiter:
+                            raiderio_data = await self.get_raiderio_data(
+                                character.name, character.realm, character.region)
+                            if raiderio_data is not None:
+                                await WarcraftCharacterInterface.update_character(raiderio_data)
+                                await self.log_weekly_runs(raiderio_data)
+                            elif abs((datetime.now() - character.last_updated)).days > 30:
+                                print(f'{character.name} removed for being old.')
+                                await WarcraftCharacterInterface.remove_character(character)
+                    except Exception as e:
+                        print(f'Error occurred when attempting to retrieve character data '
+                              f'for {character.name} during '
+                              f'character crawl:\n{e}')
+                        continue
+            else:
+                print('No characters found to update.')
 
-    # region Looping Tasks
-    async def auto_crawl(self):
-        """
-        Auto-runs every half hour. Calls two methods, crawl_all_characters and
-        crawl_all_guilds. The first ensures all characters are updated, the latter
-        ensures all guild members and guild ranks are crawled.
-
-        :return: None
-        """
-        while not self.casper.is_closed():
-            print(f'Crawling all characters starting at {datetime.now()}.')
-            await self.crawl_all_characters()
-            print(f'Finished crawling all characters at {datetime.now()}.')
-            print(f'Crawling Felforged starting at {datetime.now()}.')
-            await self.crawl_guild()
-            print(f'Finished crawling Felforged at {datetime.now()}.')
-            await asyncio.sleep(60*30)  # sleep for 30 minutes
-
-    async def crawl_all_characters(self):
-        """
-        Gets a list of all characters from the database and then pulls updated
-        information from raider.io. If the character cannot be fetched from raider.io,
-
-        :return: None
-        """
-        rate_limiter = RateLimiter(max_calls=120, period=60)
-        characters = await WarcraftCharacterInterface.get_all_characters()
-        try:
-            for character in characters:
-                async with rate_limiter:
-                    raiderio_data = await self.get_raiderio_data(
-                        character.name, character.realm, character.region)
-                    if raiderio_data is not None:
-                        await WarcraftCharacterInterface.update_character(raiderio_data)
-                    elif abs((datetime.now() - character.last_updated)).days > 30:
-                        print(f'{character.name} removed for being old.')
-                        await WarcraftCharacterInterface.remove_character(character)
-        except Exception as e:
-            print(f'Error occurred when attempting to retrieve character data during '
-                  f'mass crawl:\n{e}')
-
-    async def crawl_guild(self):
-        rate_limiter = RateLimiter(max_calls=120, period=60)
-        try:
+        async def crawl_guild():
+            rate_limiter = RateLimiter(max_calls=120, period=60)
             members = await self.get_guild_members_from_blizzard(
-                self.guild_name, self.guild_realm, self.region)
-            if members is not None:
+                    self.guild_name, self.guild_realm, self.region)
+            if len(members) > 0:
                 for name, realm, rank in members:
-                    async with rate_limiter:
-                        raiderio_data = await self.get_raiderio_data(
-                            name, realm, self.region)
-                        if raiderio_data is not None:
-                            await WarcraftCharacterInterface.update_character(
-                                raiderio_data, rank)
-        except Exception as e:
-            print(f'Error occurred during crawl Felforged:\n{e}')
-    # endregion
+                    try:
+                        async with rate_limiter:
+                            raiderio_data = await self.get_raiderio_data(
+                                name, realm, self.region)
+                            if raiderio_data is not None:
+                                await WarcraftCharacterInterface.update_character(
+                                    raiderio_data, rank)
+                    except Exception as e:
+                        print(f'Error occurred during crawl Felforged and character '
+                              f'{name}:\n{e}')
+                        continue
+            else:
+                print('Could not fetch guild members during crawl_guild.')
 
-    # region Removes response and command invoke message
+        @tasks.loop(seconds=300)
+        async def auto_crawl():
+            """
+            Auto-runs every 10 minutes. Calls two methods, crawl_all_characters and
+            crawl_all_guilds. The first ensures all guild members and guild ranks are
+            crawled, the latter ensures all characters are updated.
+
+            :return: None
+            """
+            print('----------------------------------------')
+            print(f'Crawling Felforged starting at {datetime.now()}.')
+            await crawl_guild()
+            print(f'Finished crawling Felforged at {datetime.now()}.')
+            print('----------------------------------------')
+            print('----------------------------------------')
+            print(f'Crawling all characters starting at {datetime.now()}.')
+            await crawl_all_characters()
+            print(f'Finished crawling all characters at {datetime.now()}.')
+            print('----------------------------------------')
+
+        auto_crawl.start()
+
+        @tasks.loop(seconds=300)
+        async def weekly_reset():
+            # Felforged pve channel
+            ch = self.casper.get_channel(647918497342423052)
+            if datetime.now().weekday() == 1 and datetime.now().hour == 10:
+                if (await WarcraftCharacterInterface.reset_keys() and
+                        await WeeklyGuildRunsInterface.reset_runs()):
+                    await ch.send('Weekly reset, keys and weekly runs reset. Wish you '
+                                  'good loot and stable connect!')
+                    await asyncio.sleep(24*60*60)
+                else:
+                    me = await self.casper.fetch_user(213665551988293632)  # me
+                    await me.send('An error occurred when attempting weekly reset.')
+
+        weekly_reset.start()
+
+    @commands.Cog.listener()
+    async def on_message(self, message):
+        stripped_msg = message.content.translate(
+            str.maketrans('', '', string.punctuation)
+        ).lower()
+        channel = message.channel
+
+        if message.author.id == self.casper.user.id:
+            return
+
+        # Ursola
+        if message.author.id == 219924616121024512 and random.random() <= 0.01:
+            # expac is gonna be lit
+            await channel.send('https://i.imgur.com/Q2Defzk.png')
+
+        # Cas
+        if message.author.id == 223587679051317248 and random.random() <= 0.01:
+            # buy next 6 month mount
+            await channel.send('https://i.imgur.com/CsNcnnG.png')
+
+        # Grass
+        if message.author.id == 227471595470454786 and random.random() <= 0.01:
+            # don't roll off ledges
+            await channel.send('https://i.imgur.com/1Wi1UEy.jpg')
+
+        if (any('ion' == word for word in stripped_msg.split()) or
+                any('ions' == word for word in stripped_msg.split())) and \
+                random.random() <= 0.15:
+            # ion big dick energy
+            await channel.send('https://i.imgur.com/jsAyl9e.gif')
+
+        if any('anima' == word for word in stripped_msg.split()) and \
+                random.random() <= 0.05:
+            await channel.send('https://i.imgur.com/AG6tvqG.png')
+
+    @commands.command(hidden=True)
+    async def test(self, ctx, name):
+        data = await self.get_raiderio_data(name, 'wyrmrest-accord', 'us')
+        weekly_high: dict = data['mythic_plus_weekly_highest_level_runs']
+        if len(weekly_high) > 0:
+            #pprint(weekly_high[0])
+            for dungeon in weekly_high:
+                dungeon_name = dungeon['dungeon']
+                dungeon_level = dungeon['mythic_level']
+                dungeon_id = dungeon['url'].split('/')[5].split('-')[0]
+                print(dungeon_name, dungeon_level, dungeon_id)
+
     @commands.command()
-    async def crawlguild(self):
-        return await self.crawl_guild()
+    async def cas(self, ctx):
+        await ctx.message.delete()
+        return await ctx.send('https://i.imgur.com/CsNcnnG.png')
 
+    @commands.command()
+    async def topay(self, ctx):
+        await ctx.message.delete()
+        return await ctx.send(
+                'Hi guys, returning top 1% orange parsing mage who hasn\'t played since '
+                '8.3. What\'s the best mage spec & covenent to be playing in Shadowlands '
+                'if I want to be CE Mythic Raiding and pushing high keys? Assume '
+                'infinite weekly playtime, high gamer IQ, and the the ability to play '
+                'perfect APLs and adapt as needed. Please don\'t provide a "play what is '
+                'fun" answer since what\'s fun for me is min/maxing the best performing '
+                'spec with my play time.\n\n- Top, probably​')
+
+    # region Removes response after 5 minutes
     @commands.command()
     async def wow(self, ctx, name, realm='wyrmrest-accord', region='us'):
         """
@@ -144,9 +211,8 @@ class Warcraft(commands.Cog):
             await self.react_to_message(ctx.message, False)
             return await msg.edit(content=f'Could not find data for {name.title()} on '
                                           f'{realm.title().replace("-", " ")}-'
-                                          f'{region.title()} on raider.io. Ensure the '
-                                          f'character has been queried there.',
-                                  delete_after=60)
+                                          f'{region.upper()} on raider.io. Ensure the '
+                                          f'character has been queried there.', delete_after=300)
         # for k, v in raiderio_data.items():
         #     print(f'{k}: {v}')
         await msg.edit(content=f'Found character data, updating records.')
@@ -156,74 +222,58 @@ class Warcraft(commands.Cog):
             await self.react_to_message(ctx.message, False)
             print(f'Error occurred during wow command character update:\n{e}')
             return await msg.edit(content='An error occurred when updating the '
-                                          'character record. Sorry.',
-                                  delete_after=60)
+                                          'character record. Sorry.', delete_after=300)
         await msg.edit(content=f'Records updated, building layout.')
         try:
             embed = await self.build_character_embed(raiderio_data)
             await self.react_to_message(ctx.message, True)
-            return await msg.edit(content='', embed=embed, delete_after=60)
+            return await msg.edit(content='', embed=embed, delete_after=300)
         except Exception as e:
             await self.react_to_message(ctx.message, False)
             print(f'Error occurred during wow command building embed:\n{e}')
             return await msg.edit(content=f'An error occurred while building '
-                                          f'layout. Sorry.',
-                                  delete_after=60)
+                                          f'layout. Sorry.', delete_after=300)
 
     @commands.command()
-    async def guild(self, ctx, name='felforged', realm='wyrmrest-accord', region='us'):
-        msg = await ctx.send(f'Fetching data for {name.replace("-", " ").title()} on '
-                             f'{realm.title().replace("-", " ")}-'
-                             f'{region.upper()}.')
-        raiderio_data = await self.get_raiderio_guild_data(name, realm, region)
-        if raiderio_data is None:
+    async def mplus(self, ctx, *, char_names=None):
+        """
+        See how many m+ you've run since start of Legion
+
+        :param ctx:
+        :param char_names:
+        :return:
+        """
+        if char_names is None:
             await self.react_to_message(ctx.message, False)
-            return await msg.edit(content=f'Could not find data for {name.title()} on '
-                                          f'{realm.title().replace("-", " ")}-'
-                                          f'{region.title()} on raider.io. Ensure the '
-                                          f'guild has been queried there.',
-                                  delete_after=60)
-        await msg.edit(content=f'Found guild data, building layout.')
+            return await ctx.send('You must provide at least one character name. You can '
+                                  'list multiple character names separated by a space.')
+        msg = await ctx.send(f'Fetching character data...')
+        out_msg = (f'```{"Name:":<{14}}{"M+ Run: (since Legion)":<{5}}\n'
+                   f'-------------------------------\n')
+        total = 0
         try:
-            embed = await self.build_guild_embed(raiderio_data)
+            for char in char_names.split(' '):
+                criteria_resp = await self.get_blizzard_achieve_statistics_data(
+                    char, 'wyrmrest-accord', 'us')
+                # Bro, this is gross
+                if criteria_resp is not None:
+                    for section in criteria_resp['categories']:
+                        if section['name'] == 'Dungeons & Raids':
+                            for subsection in section['statistics']:
+                                if subsection['id'] == 7399:
+                                    total += int(subsection["quantity"])
+                                    out_msg += (f'{char.title():<{14}}'
+                                                f'{int(subsection["quantity"])}\n')
+            out_msg += (f'-------------------------------\n'
+                        f'{"Total:":<{13}}{total:{5}}```')
             await self.react_to_message(ctx.message, True)
-            return await msg.edit(content='', embed=embed, delete_after=60)
+            return await msg.edit(content=out_msg, delete_after=300)
         except Exception as e:
+            print(f'Mplus command messed up:\n{e}')
             await self.react_to_message(ctx.message, False)
-            print(f'Error occurred during guild command building embed:\n{e}')
-            return await msg.edit(content=f'An error occurred while building '
-                                          f'layout. Sorry.',
-                                  delete_after=60)
+            return await ctx.send('Sorry, an error occurred when collecting data.',
+                                  delete_after=300)
 
-    @commands.command()
-    async def token(self, ctx):
-        """
-        Fetches the price for a Blizzard token.
-
-        :param ctx: Discord.py invocation context. Used for sending messages.
-        :return: A message containing the price of a token if successful, otherwise an
-        error message.
-        """
-        region = 'us'
-        token = await self.get_blizzard_access_token()
-        api_url = (f'https://{region.lower()}.api.blizzard.com/data/wow/token/index?'
-                   f'namespace=dynamic-us'
-                   f'&locale=en_US'
-                   f'&access_token={token["access_token"]}')
-        response = await utilities.json_get(api_url)
-        try:
-            price = int((response['price'] / 100) / 100)
-            await self.react_to_message(ctx.message, True)
-            return await ctx.send(f'The price of a token for the {region.upper()} '
-                                  f'costs: {price:,} gold.', delete_after=60)
-        except AttributeError as e:
-            await self.react_to_message(ctx.message, False)
-            print(f'An error occurred when fetching token price:\n{e}')
-            return await ctx.send('Could not fetch token price at this time. Please try '
-                                  'again later.', delete_after=60)
-    # endregion
-
-    # region Leaves response and command invoke message
     @commands.command(aliases=['rc'])
     async def readycheck(self, ctx, sort_by='rank', ranks='0,1,3,6'):
         """
@@ -244,7 +294,7 @@ class Warcraft(commands.Cog):
             return await ctx.send(f'Ranks must be given as their numerical values as '
                                   f'depicted on the armory. 0 for GM, 1 for Officers, '
                                   f'and so on to 7 separated by a comma:\n'
-                                  f'Example: 0,2,4,5')
+                                  f'Example: 0,2,4,5', delete_after=300)
         msg = await ctx.send(f'Fetching members for '
                              f'{self.guild_name.replace("-", "").title()} '
                              f'on {self.guild_realm.replace("-", " ").title()}'
@@ -254,7 +304,7 @@ class Warcraft(commands.Cog):
         await msg.edit(content=f'Members found. Building layout.')
         output = await self.build_readycheck_msg(guild_members, sort_by)
         await self.react_to_message(ctx.message, True)
-        return await msg.edit(content=output)
+        return await msg.edit(content=output, delete_after=300)
 
     @commands.command()
     async def scores(self, ctx, num=10):
@@ -274,8 +324,104 @@ class Warcraft(commands.Cog):
         await msg.edit(content=f'Building layout.')
         output = await self.build_scores_msg(characters, num)
         await self.react_to_message(ctx.message, True)
-        return await msg.edit(content='', embed=output)
+        return await msg.edit(content='', embed=output, delete_after=300)
 
+    @commands.command(aliases=['abb', 'abbs', 'abs', 'dungeons'])
+    async def abbreviations(self, ctx):
+        """
+        See available abbreviations for Shadowlands dungeons
+
+        :param ctx:
+        :return:
+        """
+        out_msg = 'Please use one of the following abbreviations for dungeons:\n\n'
+        for dungeon, abbs in self.sl_dungeons.items():
+            abbreviations = ', '.join(abbs)
+            out_msg += f'**{dungeon}**: {abbreviations}\n'
+        await self.react_to_message(ctx.message, True)
+        return await ctx.send(out_msg, delete_after=300)
+
+    @commands.command(aliases=['ak'])
+    async def addkey(self, ctx, name, key_info=None):
+        """
+        Adds a mythic+ key to a character.
+
+        :param ctx: Discord.py invocation context. Used for sending messages.
+        :param name: Character name
+        :param key_info: Key info formatted as dungeon_abbreviation+key_level
+        :return: The list of current mythic+ keys for the default guild of the discord
+        server if successful, otherwise an error message
+        """
+        if key_info is None:
+            return await ctx.send('Please format your key info as:\n'
+                                  '`casper addkey allikazam fh+18`')
+        if '+' not in key_info:
+            return await ctx.send('Please format your key info as:\n'
+                                  '`casper addkey allikazam fh+18`')
+        try:
+            # Grab the dungeon name from the SL Dungeons dict if the abbreviation
+            # used is found in the tuple of values
+            key = [dungeon_name[0] for dungeon_name in self.sl_dungeons.items()
+                   if key_info.split('+')[0].lower() in dungeon_name[1]][0]
+            key_level = int(key_info.split('+')[1])
+        except Exception as e:
+            print(f'Error occurred when parsing dungeon info:\n{e}')
+            out_msg = 'Please use one of the following abbreviations for dungeons:\n\n'
+            for dungeon, abbs in self.sl_dungeons.items():
+                abbreviations = ', '.join(abbs)
+                out_msg += f'**{dungeon}**: {abbreviations}\n'
+            return await ctx.send(out_msg, delete_after=300)
+        character = await WarcraftCharacterInterface.get_character(
+            name, self.guild_realm, self.region)
+        if character is None:
+            await self.react_to_message(ctx.message, False)
+            return await ctx.send(f'Could not find character by name of: {name.title()}.'
+                                  f'Please try using the `wow` command to scan your '
+                                  f'character.', delete_after=300)
+        await WarcraftCharacterInterface.addkey(character, key, key_level)
+        return await self.react_to_message(ctx.message, True)
+
+    @commands.command(aliases=['rk'])
+    async def removekey(self, ctx, name=None):
+        """
+
+        :param ctx: Discord.py invocation context. Used for sending messages.
+        :param name: Character name
+        :return: A message with the outcome of the key removal
+        """
+        if name is None:
+            return await ctx.send('Please format your command as:\n'
+                                  '`casper removekey allikazam`')
+        character = await WarcraftCharacterInterface.get_character(
+            name, self.guild_realm, self.region)
+        if character is None:
+            await self.react_to_message(ctx.message, False)
+            return await ctx.send(f'Could not find character by name of: {name.title()}. '
+                                  f'This message will delete itself in 30 seconds.',
+                                  delete_after=300)
+        await WarcraftCharacterInterface.removekey(character)
+        return await self.react_to_message(ctx.message, True)
+
+    @commands.command()
+    async def remove(self, ctx, name):
+        """
+        Used to remove characters from the database that may no longer exist.
+
+        :param ctx: Discord.py invocation context. Used for sending messages.
+        :param name: Character name
+        :return: A message with the outcome of the character removal
+        """
+        character = await WarcraftCharacterInterface.get_character(
+            name, self.guild_realm, self.region)
+        if character is None:
+            await self.react_to_message(ctx.message, False)
+            return await ctx.send(f'Could not find character by name of: {name.title()}.',
+                                  delete_after=300)
+        await WarcraftCharacterInterface.remove_character(character)
+        return await self.react_to_message(ctx.message, True)
+    # endregion
+
+    # region Leaves response
     @commands.command()
     async def callout(self, ctx, ranks='0,1,3,6'):
         """
@@ -298,6 +444,22 @@ class Warcraft(commands.Cog):
         return await msg.edit(content=output)
 
     @commands.command()
+    async def weeklyruns(self, ctx, name, count=4):
+        """
+        View all the weekly m+ runs done by a character.
+
+        :param ctx: Invoking context
+        :param name: Name of the character to look up
+        :param count: Max number of runs to return, default 4, max 10.
+        :return: An embed with dungeons sorted high to low
+        """
+        runs = await WeeklyGuildRunsInterface.get_player_runs(name.lower())
+        if count > 10:
+            count = 10
+        embed = await self.build_weeklyruns_embed(name, runs, count)
+        return await ctx.send(embed=embed)
+
+    @commands.command()
     async def keys(self, ctx):
         """
         Fetches a list of characters with mythic+ key information.
@@ -310,95 +472,77 @@ class Warcraft(commands.Cog):
                 self.guild_name, self.guild_realm, self.region))
         await self.react_to_message(ctx.message, True)
         return await ctx.send(guild_keys_output)
-    # endregion
 
-    # region Reacts to message and leave command invoke message
-    @commands.command(aliases=['ak'])
-    async def addkey(self, ctx, name, key_info=None):
+    @commands.command()
+    async def token(self, ctx):
         """
-        Adds a mythic+ key to a character.
+        Fetches the price for a Blizzard token.
 
         :param ctx: Discord.py invocation context. Used for sending messages.
-        :param name: Character name
-        :param key_info: Key info formatted as dungeon_abbreviation+key_level
-        :return: The list of current mythic+ keys for the default guild of the discord
-        server if successful, otherwise an error message
+        :return: A message containing the price of a token if successful, otherwise an
+        error message.
         """
-        if key_info is None:
-            return await ctx.send('Please format your key info as:\n'
-                                  '`casper addkey allikazam fh+18`')
-        if '+' not in key_info:
-            return await ctx.send('Please format your key info as:\n'
-                                  '`casper addkey allikazam fh+18`')
+        region = 'us'
+        token = await self.get_blizzard_access_token()
+        api_url = (f'https://{region.lower()}.api.blizzard.com/data/wow/token/index?'
+                   f'namespace=dynamic-us'
+                   f'&locale=en_US'
+                   f'&access_token={token["access_token"]}')
+        response = await Utilities(self.aiohttp_session).json_get(api_url)
         try:
-            key = self.dungeons[key_info.split('+')[0].lower()]
-            key_level = int(key_info.split('+')[1])
+            price = int((response['price'] / 100) / 100)
+            await self.react_to_message(ctx.message, True)
+            return await ctx.send(f'The price of a token for the {region.upper()} '
+                                  f'costs: {price:,} gold.')
+        except AttributeError as e:
+            await self.react_to_message(ctx.message, False)
+            print(f'An error occurred when fetching token price:\n{e}')
+            return await ctx.send('Could not fetch token price at this time. Please try '
+                                  'again later.')
+
+    @commands.command()
+    async def affixes(self, ctx):
+        """
+        Display this week's current m+ affixes.
+
+        :param ctx:
+        :return:
+        """
+        affix_resp = await self.get_affixes()
+        try:
+            affix_details = affix_resp['affix_details']
+            out_msg = ''
+            for affix in affix_details:
+                out_msg += (f'**__{affix["name"]}__**:\n'
+                            f'{affix["description"]}\n\n')
+            await self.react_to_message(ctx.message, True)
+            return await ctx.send(out_msg)
         except Exception as e:
-            print(f'Error occurred when parsing dungeon info:\n{e}')
-            out_msg = 'Please use one of the following abbreviations for dungeons:\n'
-            for abb in self.dungeons.items():
-                out_msg += f'{abb[0]}: {abb[1]}\n'
-            return await ctx.send(out_msg, delete_after=60)
-        character = await WarcraftCharacterInterface.get_character(
-            name, self.guild_realm, self.region)
-        if character is None:
+            print(f'An error occurred when attempting to fetch the affixes.\n{e}')
             await self.react_to_message(ctx.message, False)
-            return await ctx.send(f'Could not find character by name of: {name.title()}.')
-        await WarcraftCharacterInterface.addkey(character, key, key_level)
-        return await self.react_to_message(ctx.message, True)
 
     @commands.command()
-    async def removekey(self, ctx, name=None):
-        """
-
-        :param ctx: Discord.py invocation context. Used for sending messages.
-        :param name: Character name
-        :return: A message with the outcome of the key removal
-        """
-        if name is None:
-            return await ctx.send('Please format your command as:\n'
-                                  '`casper removekey allikazam`')
-        character = await WarcraftCharacterInterface.get_character(
-            name, self.guild_realm, self.region)
-        if character is None:
-            await self.react_to_message(ctx.message, False)
-            return await ctx.send(f'Could not find character by name of: {name.title()}. '
-                                  f'This message will delete itself in 30 seconds.',
-                                  delete_after=60)
-        await WarcraftCharacterInterface.removekey(character)
-        return await self.react_to_message(ctx.message, True)
-
-    @commands.command()
-    async def resetkeys(self, ctx):
-        """
-        Resets the mythic+ key information.
-
-        :param ctx: Discord.py invocation context. Used for sending messages.
-        :return: A message stating keys have been reset
-        """
-        await WarcraftCharacterInterface.reset_keys()
-        return await self.react_to_message(ctx.message, True)
-
-    @commands.command()
-    async def remove(self, ctx, name):
-        """
-        Used to remove characters from the database that may no longer exist.
-
-        :param ctx: Discord.py invocation context. Used for sending messages.
-        :param name: Character name
-        :return: A message with the outcome of the character removal
-        """
-        character = await WarcraftCharacterInterface.get_character(
-            name, self.guild_realm, self.region)
-        if character is None:
-            await self.react_to_message(ctx.message, False)
-            return await ctx.send(f'Could not find character by name of: {name.title()}.')
-        await WarcraftCharacterInterface.remove_character(character)
-        return await self.react_to_message(ctx.message, True)
+    async def vault(self, ctx):
+        return await ctx.send(
+            'The weekly vault works as such:\n\n'
+            'Running a single m+ rewards a single piece of gear based on the level of '
+            'that dungeon.\n'
+            'Running four (4) m+ will reward a second piece of gear based on the 4th '
+            'highest dungeon you\'ve run this week.\n'
+            'Running ten (10) m+ will reward a third piece of gear based on the 10th '
+            'highest dungeon you\'ve run this week.\n\n'
+            'For example, if you run four (4) dungeons at +15, +12, +14, +15, the first '
+            'piece of gear in the vault will be a +15 piece, the second will be a +12 '
+            'piece (no matter what order you did those keys in).\n'
+            'If you run ten dungeons (first, get some help) at +3, +14, +10, +15, +15, '
+            '+8, +12, +11, +15, +14, the first piece of gear will be a +15 piece, the '
+            'second piece of gear will be a +14 piece, and the third piece of gear will '
+            'be a +3 piece.\n\n'
+        )
     # endregion
 
     # region Administrative commands
-    @commands.command()
+    @commands.command(hidden=True)
     async def removeall(self, ctx):
         if ctx.author.id != self.casper.owner_id:
             return
@@ -409,7 +553,7 @@ class Warcraft(commands.Cog):
             await WarcraftCharacterInterface.remove_character(char)
         return await self.react_to_message(ctx.message, True)
 
-    @commands.command()
+    @commands.command(hidden=True)
     async def removeguild(self, ctx, guild_name, realm='wyrmrest-accord', region='us'):
         """
         Used to remove guilds from the database that may no longer exist.
@@ -447,8 +591,7 @@ class Warcraft(commands.Cog):
             return await msg.add_reaction('\U00002705')  # white checkmark in green box
         return await msg.add_reaction('\U0000274c')  # red cross mark X
 
-    @staticmethod
-    async def get_blizzard_access_token():
+    async def get_blizzard_access_token(self):
         """
         Fetched an access token for use with Blizzard API.
 
@@ -458,12 +601,13 @@ class Warcraft(commands.Cog):
                f'client_credentials&client_id={WarcraftAPI.API_CLIENTID}'
                f'&client_secret={WarcraftAPI.API_CLIENTSECRET}')
         try:
-            token = await utilities.json_get(url)
+            token = await Utilities(self.aiohttp_session).json_get(url)
             return token
         except KeyError as e:
             print(f'Error attempting to generate access token:\n{e}')
             return None
 
+    # TODO: UNUSED
     async def get_blizzard_data(self, name, realm, region):
         """
         Fetches character information from Blizzard API.
@@ -476,13 +620,14 @@ class Warcraft(commands.Cog):
         token = await self.get_blizzard_access_token()
         if token is not None:
             url = (f'https://{region.lower()}.api.blizzard.com/profile/wow/character/'
-                   f'{realm.lower()}/{parse.quote(name).lower()}'
+                   f'{realm.lower()}/{parse.quote(name.title())}'
                    f'?namespace=profile-us&locale=en_US'
                    f'&access_token={token["access_token"]}')
-            return await utilities.json_get(url)
+            return await Utilities(self.aiohttp_session).json_get(url)
         else:
             return None
 
+    # TODO: UNUSED
     async def get_blizzard_achieve_data(self, name, realm, region):
         """
         Fetches character information from Blizzard API.
@@ -495,15 +640,33 @@ class Warcraft(commands.Cog):
         token = await self.get_blizzard_access_token()
         if token is not None:
             url = (f'https://{region.lower()}.api.blizzard.com/profile/wow/character/'
-                   f'{realm.lower()}/{parse.quote(name).lower()}/achievements'
+                   f'{realm.lower()}/{parse.quote(name.title())}/achievements'
                    f'?namespace=profile-us&locale=en_US'
                    f'&access_token={token["access_token"]}')
-            return await utilities.json_get(url)
+            return await Utilities(self.aiohttp_session).json_get(url)
         else:
             return None
 
-    @staticmethod
-    async def get_raiderio_data(name, realm, region):
+    async def get_blizzard_achieve_statistics_data(self, name, realm, region):
+        """
+        Fetches character information from Blizzard API.
+
+        :param name: Character name
+        :param realm: Realm name, space are auto-sanitized
+        :param region: 2-letter abbreviation for region - US, EU, RU, KR
+        :return: Character information from Blizzard API if successful, otherwise None
+        """
+        token = await self.get_blizzard_access_token()
+        if token is not None:
+            url = (f'https://{region.lower()}.api.blizzard.com/profile/wow/character/'
+                   f'{realm.lower()}/{parse.quote(name.title())}/achievements/statistics'
+                   f'?namespace=profile-us&locale=en_US'
+                   f'&access_token={token["access_token"]}')
+            return await Utilities(self.aiohttp_session).json_get(url)
+        else:
+            return None
+
+    async def get_raiderio_data(self, name, realm, region):
         """
         Fetches character information from Raider.io API
 
@@ -514,21 +677,20 @@ class Warcraft(commands.Cog):
         """
         url = (f'https://raider.io/api/v1/characters/profile?region={region.lower()}'
                f'&realm={realm.replace(" ", "-").lower()}'
-               f'&name={parse.quote(name).lower()}'
+               f'&name={parse.quote(name)}'
                f'&fields=gear,corruption,guild,raid_progression,mythic_plus_ranks,'
                f'mythic_plus_recent_runs,mythic_plus_highest_level_runs,'
                f'mythic_plus_weekly_highest_level_runs,'
                f'mythic_plus_previous_weekly_highest_level_runs,'
                f'mythic_plus_scores_by_season:current')
-        return await utilities.json_get(url)
+        return await Utilities(self.aiohttp_session).json_get(url)
 
-    @staticmethod
-    async def get_raiderio_guild_data(name, realm, region):
+    async def get_raiderio_guild_data(self, name, realm, region):
         url = (f'https://raider.io/api/v1/guilds/profile?'
                f'region={region.lower()}&realm={realm.replace(" ", "-").lower()}'
-               f'&name={parse.quote(name.replace("-", " ")).lower()}'
+               f'&name={parse.quote(name.replace("-", " "))}'
                f'&fields=raid_progression,raid_rankings')
-        return await utilities.json_get(url)
+        return await Utilities(self.aiohttp_session).json_get(url)
 
     async def get_guild_members_from_blizzard(self, guild_name, realm, region):
         """
@@ -548,13 +710,13 @@ class Warcraft(commands.Cog):
                        f'{parse.quote(guild_name.replace("-", " ")).lower()}'
                        f'/roster?namespace=profile-us&locale=en_US'
                        f'&access_token={token["access_token"]}')
-                results = await utilities.json_get(url)
+                results = await Utilities(self.aiohttp_session).json_get(url)
                 if results is None:
                     return None
                 members = []
                 for member in results['members']:
                     if 'realm' in member['character'] and \
-                            member['character']['level'] == 120:
+                            (50 <= member['character']['level'] <= 60):
                         members.append((member['character']['name'],
                                         member['character']['realm']['slug'],
                                         member['rank']))
@@ -566,8 +728,21 @@ class Warcraft(commands.Cog):
                 pass
             return None
 
+    async def get_affixes(self):
+        url = 'https://raider.io/api/v1/mythic-plus/affixes?region=us&locale=en'
+        return await Utilities(self.aiohttp_session).json_get(url)
+
     @staticmethod
-    async def build_character_embed(r):  # r is raiderio_data
+    async def log_weekly_runs(raiderio_data):
+        for dungeon in raiderio_data['mythic_plus_weekly_highest_level_runs']:
+            dungeon_name = dungeon['dungeon']
+            dungeon_level = dungeon['mythic_level']
+            run_id = dungeon['url'].split('/')[5].split('-')[0]
+            await WeeklyGuildRunsInterface.add_run(
+                run_id, raiderio_data['name'], dungeon_name, dungeon_level
+            )
+
+    async def build_character_embed(self, r):  # r is raiderio_data
         """
         Builds a Discord Embed object with character information.
 
@@ -586,26 +761,29 @@ class Warcraft(commands.Cog):
             name=f'{guild_name} {r["realm"]}-{r["region"].upper()}',
             value=(f'{r["race"]} {r["active_spec_name"]} {r["class"]}\n'
                    f'**ilvl:** {r["gear"]["item_level_equipped"]}\n'
-                   f'Heart of Azeroth: {r["gear"]["artifact_traits"]:.1f}\n'
-                   f'Cloak Level: {r["gear"]["corruption"]["cloakRank"]} '
-                   f'(Corruption: {r["gear"]["corruption"]["total"]})\n'
                    f'[Armory](https://worldofwarcraft.com/en-us/character/'
                    f'{r["realm"].lower().replace(" ", "-")}/{r["name"].lower()}) - '
                    f'[Raider.io](https://raider.io/characters/{r["region"].lower()}'
-                   f'/{r["realm"].lower().replace(" ", "-")}/{r["name"].lower()})')
+                   f'/{r["realm"].lower().replace(" ", "-")}/{r["name"].lower()})'),
+            inline=False
         )
 
         # RAID PROGRESSION
         raids = r["raid_progression"]
-        embed.add_field(
-            name='__**Raid Progression:**__',
-            value=(f'**UD:** {raids["uldir"]["summary"]:{12}}'
-                   f'**BoD:** {raids["battle-of-dazaralor"]["summary"]:{12}}'
-                   f'**CoS:** {raids["crucible-of-storms"]["summary"]:{12}}'
-                   f'**EP:** {raids["the-eternal-palace"]["summary"]:{12}}'
-                   f'**NWC:** {raids["nyalotha-the-waking-city"]["summary"]:{12}}'),
-            inline=False
-        )
+        try:
+            embed.add_field(
+                name='__**Raid Progression:**__',
+                value=(f'**CN:** {raids["castle-nathria"]["summary"]:{12}}'),
+                inline=False
+            )
+        except Exception as e:
+            print(f'Error occurred during wow command building embed, raid progression '
+                  f'section:\n{e}')
+            embed.add_field(
+                name='__**Raid Progression:**__',
+                value=(f'Could not fetch raid progression at this time.'),
+                inline=False
+            )
 
         # MYTHIC+ PROGRESSION
         season_highs = r['mythic_plus_highest_level_runs']
@@ -644,6 +822,7 @@ class Warcraft(commands.Cog):
                                       f'{weekly_highs[0]["score"]}.\n'
                                       f'[Run Info]({weekly_highs[0]["url"]})',
                                 inline=False)
+                await self.log_weekly_runs(r)
 
             # MOST RECENT MYTHIC+ PROGRESSION
             elif len(recent_highs) > 0:
@@ -665,9 +844,6 @@ class Warcraft(commands.Cog):
                 value='No mythic+ data exists for this character.',
                 inline=False
             )
-        embed.add_field(name='This message will self-destruct in:',
-                        value='60 seconds.',
-                        inline=False)
         return embed
 
     @staticmethod
@@ -731,14 +907,12 @@ class Warcraft(commands.Cog):
         :param sort_by: rank (default), name, class, hoa, mplus, ilvl
         :return: A layout with the sorted list of characters and relevant information
         """
+        if len(guild_members) == 0:
+            return 'No members found.'
         if sort_by == 'rank':
             guild_members = sorted(sorted(guild_members,
                                           key=lambda x: x.name),
                                    key=lambda x: x.guild_rank)
-        elif sort_by == 'hoa':
-            guild_members = sorted(sorted(guild_members,
-                                          key=lambda x: x.name),
-                                   key=lambda x: x.heart_of_azeroth_level, reverse=True)
         elif sort_by == 'ilvl':
             guild_members = sorted(sorted(guild_members,
                                           key=lambda x: x.name),
@@ -754,29 +928,72 @@ class Warcraft(commands.Cog):
                                           key=lambda x: x.name),
                                    key=lambda x: x.corruption_remaining, reverse=True)
         total_ilvl = 0
-        total_heart = 0.0
         member_count = 0
-        output = (f'```{"Name:":{14}}{"HoA:":{6}}{"M+:":{9}}'
-                  f'{"ilvl:":{6}}{"Cloak:":{10}}\n'
-                  f'--------------------------------------------\n')
+        output = (f'```{"Name:":{14}}|{"M+":{14}}|{"ilvl:":{6}}|\n'
+                  f'{"-"*14}+{"-"*14}+{"-"*6}|\n')
         for character in guild_members:
             total_ilvl += character.ilvl
-            total_heart += character.heart_of_azeroth_level
             member_count += 1
-            output += (f'{character.name.title():{14}}'
-                       f'{character.heart_of_azeroth_level:<{6}}'
+            num_runs = len(await WeeklyGuildRunsInterface.get_player_runs(character.name.title()))
+            output += (f'{character.name.title():{14}}|'
                        f'{character.m_plus_weekly_high:<{3}}'
-                       f'| {character.m_plus_prev_weekly_high:<{4}}'
-                       f'{character.ilvl:<{6}}'
-                       f'{character.cloak_rank:<{3}}| '
-                       f'{character.corruption_remaining:<{3}}\n')
+                       f'/ {character.m_plus_prev_weekly_high:<{4}}'
+                       f'/ {num_runs:<{3}}|'
+                       f'{character.ilvl:<{6}}|\n')
         avg_ilvl = round(total_ilvl/member_count)
-        avg_heart = round(total_heart/member_count, 1)
-        output += ('--------------------------------------------\n'
-                   f'{"Avg:":{14}}{avg_heart:<{15}}{avg_ilvl:<{6}}\n\n'
-                   'Remember: You need to clear a +15 (not necessarily in time) '
-                   'to maximize the loot from your weekly chest.```')
+        output += (f'{"-"*14}+{"-"*14}+{"-"*6}|\n'
+                   f'{"Avg:":{14}}|{"":{14}}|{avg_ilvl:<{6}}|\n\n'
+                   'Remember:\n'
+                   ' - You need to clear a +15 (not necessarily in time) '
+                   'to maximize the loot from your weekly chest\n'
+                   ' - Weekly vault rewards an extra piece of gear after 1, 4, 10 runs\n'
+                   ' - Use the command `casper vault` for more info```')
         return output
+
+    @staticmethod
+    async def build_weeklyruns_embed(name, runs, count):
+        embed = discord.Embed()
+        embed.title = f'__{name.title()}__'
+        runs = sorted(runs, key=lambda x: x.dungeon_level, reverse=True)
+        if len(runs) == 0:
+            embed.add_field(name='No runs found for this week.',
+                            value='Make sure the run shows on your r.io page.')
+            return embed
+        for i, run in enumerate(runs):
+            if i < count:
+                if i+1 == 1:
+                    embed.add_field(
+                        name=f'{i+1}. (1st piece of loot) {run.dungeon_name} '
+                        f'+{run.dungeon_level}',
+                        value=(f'https://raider.io/mythic-plus-runs/season-bfa-4-post/'
+                               f'{run.run_id}'),
+                        inline=False
+                    )
+                elif i+1 == 4:
+                    embed.add_field(
+                        name=f'{i+1}. (2nd piece of loot) {run.dungeon_name} '
+                        f'+{run.dungeon_level}',
+                        value=(f'https://raider.io/mythic-plus-runs/season-bfa-4-post/'
+                               f'{run.run_id}'),
+                        inline=False
+                    )
+                elif i+1 == 10:
+                    embed.add_field(
+                        name=f'{i+1}. (3rd piece of loot) {run.dungeon_name} '
+                        f'+{run.dungeon_level}',
+                        value=(f'https://raider.io/mythic-plus-runs/season-bfa-4-post/'
+                               f'{run.run_id}'),
+                        inline=False
+                    )
+                else:
+                    embed.add_field(
+                            name=f'{i+1}. {run.dungeon_name} '
+                            f'+{run.dungeon_level}',
+                            value=(f'https://raider.io/mythic-plus-runs/season-bfa-4-post/'
+                                   f'{run.run_id}'),
+                            inline=False
+                        )
+        return embed
 
     @staticmethod
     async def build_scores_msg(guild_members, num):
@@ -819,13 +1036,19 @@ class Warcraft(commands.Cog):
         message
         """
         guild_members = list(filter(lambda x: x.m_plus_weekly_high < 15, guild_members))
-        guild_members.sort(key=lambda x: x.m_plus_weekly_high)
-        output = '__**These people have not run a M+15 or higher this week:**__\n\n'
+        guild_members = sorted(sorted(guild_members,
+                                      key=lambda x: x.name),
+                               key=lambda x: x.m_plus_weekly_high)
+        output = '__**These people have not run a M+15 or higher this week:**__\n\n```'
         if len(guild_members) > 0:
+            output += (f'{"Name:":<{14}}{"Weekly High:":<{3}}\n'
+                       f'--------------------------------------------\n')
             for character in guild_members:
-                output += f'{character.name.title()} - {character.m_plus_weekly_high}\n'
-            output += ('\nRemember: You need to finish a +15 '
-                       'to maximize the loot from your weekly chest.')
+                output += (f'{character.name.title():<{14}}'
+                           f'{character.m_plus_weekly_high:<{3}}\n')
+            output += ('--------------------------------------------\n'
+                       'Remember: You need to clear a +15 (not necessarily in time) '
+                       'to maximize the loot from your weekly chest.```')
             return output
         return 'Congratulations, everyone has run a M+15 or higher this week!'
 

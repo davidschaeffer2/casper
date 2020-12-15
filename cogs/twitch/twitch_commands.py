@@ -1,0 +1,228 @@
+import asyncio
+from pprint import pprint
+
+import aiohttp
+import discord
+import random
+import string
+
+from cogs.twitch.twitch_iface import TwitchDBInterface as TwitchIface
+from config import TwitchAPI
+from configparser import ConfigParser
+from datetime import datetime
+from typing import NoReturn
+from discord.ext import commands
+
+
+class Twitch(commands.Cog):
+    def __init__(self, casper):
+        self.casper = casper
+
+        self.config = ConfigParser()
+        self.config.read('config.ini')
+
+        self.aiohttp_session = casper.aiohttp_session
+
+        #self.casper.loop.create_task(self.check_for_streams())
+
+        self.polling_rate = 30
+
+    async def check_for_streams(self) -> NoReturn:
+        """
+        Polls Twitch every 60 seconds for stream status for registered Twitch streamers
+
+        :return: None
+        """
+        ch_sims_and_logs = self.casper.get_channel(307655779056484353)
+        while not self.casper.is_closed():
+            print(f'=============================================\n'
+                  f'Crawling streams at {datetime.now()}...')
+            channels = await TwitchIface.get_all_channels()
+            try:
+                for ch in channels:
+                    print(f'Checking {ch.username.title()} stream...')
+                    stream = await self.get_twitch_channel_status(ch.username)
+                    stream = stream['data']
+                    if len(stream) == 0:  # non-live streams are empty
+                        await TwitchIface.set_is_live(ch.username, False)
+                        continue
+                    print(f'{ch.username} is live:')
+                    pprint(stream)
+                    if ch.is_live is False:
+                        if await TwitchIface.set_is_live(ch.username, True):
+                            game_name = await self.get_twitch_game_name(stream[0]['game_id'])
+                            embed = await self.create_new_live_stream_embed(
+                                stream[0], game_name, True)
+                            await ch_sims_and_logs.send(embed=embed)
+            except Exception as e:
+                print(f'Weird error?\n{e}')
+                pass
+            print(f'Finished crawling streams.\n'
+                  f'=============================================')
+            await asyncio.sleep(self.polling_rate)
+
+    @commands.command()
+    async def addtwitch(self, ctx, username: str) -> discord.Message:
+        """
+        Add a new twitch channel to be polled for when they go live
+
+        :param ctx: Represents the context in which a command is being invoked under
+        :param username: The username as seen in the twitch URL
+        :return: A discord message with success/failure in the calling channel
+        """
+        if username is None:
+            return await ctx.send('Please include the username of the Twitch channel '
+                                  'you\'d you like remove.')
+        if await TwitchIface.add_channel(username=username.lower()):
+            return await ctx.send(f'Record created for {username.title()}.')
+        else:
+            return await ctx.send('An error occurred when creating a record for your '
+                                  'channel.')
+
+    @commands.command()
+    async def removetwitch(self, ctx, username: str = None) -> discord.Message:
+        """
+        Remove a twitch channel from going live notifications.
+
+        :param ctx: Represents the context in which a command is being invoked under
+        :param username: The username as seen in the twitch URL
+        :return: A discord message with success/failure in the calling channel
+        """
+        if username is None:
+            return await ctx.send('Please include the username of the Twitch channel '
+                                  'you\'d you like remove.')
+        if await TwitchIface.remove_channel(username.lower()):
+            return await ctx.send(f'Record removed for {username.title()}.')
+        else:
+            return await ctx.send('An error occurred when creating a record for your '
+                                  'channel.')
+
+    # region Cog Logic
+    async def html_get(self, url):
+        access_token = await self.get_twitch_access_token()
+        if access_token:
+            headers = {'Client-ID': TwitchAPI.CLIENT_ID,
+                       'Authorization': f'Bearer {access_token}'}
+            connector = aiohttp.TCPConnector(limit=60)
+            async with aiohttp.ClientSession(headers=headers, connector=connector) as session:
+                try:
+                    async with session.get(url) as resp:
+                        if resp.status == 200:
+                            return resp
+                        else:
+                            print(f'GET to {url} failed:\n{resp.status}:{resp.reason}')
+                            return None
+                except aiohttp.ClientConnectionError as e:
+                    print(f'An error occurred while fetching data from '
+                          f'{TwitchAPI.APP_ACCESS_TOKEN_URL}:\n{e}')
+
+    async def json_get(self, url):
+        access_token = await self.get_twitch_access_token()
+        if access_token:
+            headers = {'Client-ID': TwitchAPI.CLIENT_ID,
+                       'Authorization': f'Bearer {access_token}'}
+            connector = aiohttp.TCPConnector(limit=60)
+            async with aiohttp.ClientSession(headers=headers, connector=connector) as session:
+                try:
+                    async with session.get(url) as resp:
+                        if resp.status == 200:
+                            return await resp.json()
+                        else:
+                            print(f'GET to {url} failed:\n{resp.status}:{resp.reason}')
+                            return None
+                except aiohttp.ClientConnectionError as e:
+                    print(f'An error occurred while fetching data from '
+                          f'{url}:\n{e}')
+                    return None
+
+    @staticmethod
+    async def json_post(url):
+        headers = {'Client-ID': TwitchAPI.CLIENT_ID}
+        connector = aiohttp.TCPConnector(limit=60)
+        async with aiohttp.ClientSession(headers=headers, connector=connector) as session:
+            try:
+                async with session.post(url) as resp:
+                    if resp.status == 200:
+                        return await resp.json()
+                    elif resp.status == 400:
+                        print(f'POST to {url} failed:\n{resp.status}:{resp.reason}')
+                        return None
+            except aiohttp.ClientConnectionError as e:
+                print(f'An error occurred while posting data to '
+                      f'{TwitchAPI.APP_ACCESS_TOKEN_URL}:\n{e}')
+                return None
+            except TimeoutError as e:
+                print('')
+
+    async def get_twitch_access_token(self):
+        access_token = self.config.get('twitch_api', 'access_token')
+        if not await self.access_token_is_valid(access_token):
+            print(f'Twitch access token is not valid: {access_token}\n'
+                  f'Fetching new Twitch access token...')
+            resp = await self.json_post(TwitchAPI.APP_ACCESS_TOKEN_URL)
+            while resp is None:
+                print('Cannot fetch new access token, retrying in 30 seconds')
+                await asyncio.sleep(30)
+                resp = await self.json_post(TwitchAPI.APP_ACCESS_TOKEN_URL)
+            access_token = resp['access_token']
+            self.config.set('twitch_api', 'access_token', access_token)
+            with open('config.ini', 'w') as configfile:
+                self.config.write(configfile)
+            print(f'New Twitch access token: {access_token}')
+            return access_token
+        return access_token
+
+    @staticmethod
+    async def access_token_is_valid(access_token):
+        validation_url = 'https://id.twitch.tv/oauth2/validate'
+        headers = {'Authorization': f'OAuth {access_token}'}
+        async with aiohttp.ClientSession(headers=headers) as session:
+            try:
+                async with session.get(validation_url) as resp:
+                    if resp.status == 200:
+                        return True
+                    else:
+                        return False
+            except aiohttp.ClientConnectionError as e:
+                print(f'An error occurred while fetching data from '
+                      f'{TwitchAPI.APP_ACCESS_TOKEN_URL}:\n{e}')
+                return False
+
+    async def get_twitch_channel_status(self, username: str):
+        url_base = f'https://api.twitch.tv/helix/streams?'
+        url_params = f'user_login={username}'
+        return await self.json_get(url_base + url_params)
+
+    async def get_twitch_game_name(self, twitch_game_id):
+        url_base = f'https://api.twitch.tv/helix/games?'
+        url_params = f'id={twitch_game_id}'
+        resp = await self.json_get(url_base + url_params)
+        try:
+            return resp['data'][0]['name']
+        except IndexError as e:
+            print(f'Get game name failed:\n{e}')
+            return ''
+
+    async def create_new_live_stream_embed(self, stream: dict, game_name, is_owner):
+        embed = discord.Embed(url=f'https://www.twitch.tv/{stream["user_name"]}')
+        user_data = await self.get_twitch_user_data(stream['user_name'])
+        profile_image = user_data['profile_image_url']
+        embed.set_image(url=profile_image)
+        try:
+            embed.title = (f'{stream["user_name"]} just went live on Twitch with '
+                           f'{game_name}!')
+        except KeyError as e:
+            print(f'Embed broke: {e}')
+            return None
+        embed.description = stream["title"]
+        return embed
+
+    async def get_twitch_user_data(self, login_name):
+        url_base = f'https://api.twitch.tv/helix/users?'
+        url_params = f'login={login_name}'
+        resp = await self.json_get(url_base + url_params)
+        return resp['data'][0]
+
+
+def setup(casper):
+    casper.add_cog(Twitch(casper))
