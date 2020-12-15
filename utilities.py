@@ -48,6 +48,37 @@ class Utilities:
             async with self.aiohttp_session.post(url, headers=headers, auth=auth) as resp:
                 return await resp.json()
 
+    async def resp_get(self, url, headers=None):
+        """
+        Asynchronous method to fetch API results as html.
+
+        :param url: The url to make a GET request to.
+        :param headers: Optional headers if additional info needs to be passed along
+        :return: The response if successful, otherwise None
+        """
+        if headers is None:
+            try:
+                async with self.aiohttp_session.get(url) as resp:
+                    if resp.status == 200:
+                        return resp
+                    else:
+                        return None
+            except aiohttp.ClientConnectionError as e:
+                print(f'An error occurred while fetching data from {url}:\n'
+                      f'{e}')
+                return None
+        else:
+            try:
+                async with self.aiohttp_session.get(url, headers=headers) as resp:
+                    if resp.status == 200:
+                        return resp
+                    else:
+                        return None
+            except aiohttp.ClientConnectionError as e:
+                print(f'An error occurred while fetching data from {url}:\n'
+                      f'{e}')
+                return None
+
     async def convert_utc_to_local(self, utc_time):
         """
         Given a datetime string formatted as "YYYY-MM-DD HH:MM:SS" in zulu time,
