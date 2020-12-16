@@ -1,8 +1,8 @@
 from sqlalchemy import desc, asc
 from typing import List
 
-from database.db_models import TwitchStream
-from database.db_engine_session_initialization import Session
+from cogs.twitch.database.db_models import TwitchStream
+from cogs.twitch.database.db_engine_session_init import Session
 
 
 class TwitchDBInterface:

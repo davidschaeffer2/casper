@@ -3,8 +3,8 @@ from urllib import parse
 
 from sqlalchemy import desc, asc
 
-from database.db_models import WarcraftCharacter
-from database.db_engine_session_initialization import Session
+from cogs.warcraft.database.db_models import WarcraftCharacter
+from cogs.warcraft.database.db_engine_session_init import Session
 
 
 class WarcraftCharacterInterface:
@@ -51,9 +51,13 @@ class WarcraftCharacterInterface:
         else:
             character.m_plus_prev_weekly_high = 0
         character.last_updated = datetime.now()
-        # Expansion "Feature" TODO: FILL THIS IN WHEN API UPDATES!
-        character.covenant = ""
-        character.renown = ""
+        # Expansion "Feature"
+        if raiderio_data['covenant'] is not None:
+            character.covenant = raiderio_data['covenant']['name']
+            character.renown = raiderio_data['covenant']['renown_level']
+        else:
+            character.covenant = ''
+            character.renown = ''
         try:
             session.add(character)
             session.commit()

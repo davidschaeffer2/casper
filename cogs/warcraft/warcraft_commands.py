@@ -11,7 +11,7 @@ from ratelimiter import RateLimiter
 
 from utilities import Utilities
 from cogs.warcraft.db_interfaces.warcraft_character_iface import WarcraftCharacterInterface, WarcraftCharacter
-from cogs.warcraft.db_interfaces.weekly_gulld_runs_iface import WeeklyGuildRunsInterface
+from cogs.warcraft.db_interfaces.weekly_gulld_runs_iface import WarcraftCharacterWeeklyRunsInterface, WarcraftCharacterWeeklyRun
 from config import WarcraftAPI
 
 
@@ -116,7 +116,7 @@ class Warcraft(commands.Cog):
             ch = self.casper.get_channel(647918497342423052)
             if datetime.now().weekday() == 1 and datetime.now().hour == 10:
                 if (await WarcraftCharacterInterface.reset_keys() and
-                        await WeeklyGuildRunsInterface.reset_runs()):
+                        await WarcraftCharacterWeeklyRunsInterface.reset_runs()):
                     await ch.send('Weekly reset, keys and weekly runs reset. Wish you '
                                   'good loot and stable connect!')
                     await asyncio.sleep(24*60*60)
@@ -166,7 +166,6 @@ class Warcraft(commands.Cog):
         data = await self.get_raiderio_data(name, 'wyrmrest-accord', 'us')
         weekly_high: dict = data['mythic_plus_weekly_highest_level_runs']
         if len(weekly_high) > 0:
-            #pprint(weekly_high[0])
             for dungeon in weekly_high:
                 dungeon_name = dungeon['dungeon']
                 dungeon_level = dungeon['mythic_level']
@@ -249,7 +248,7 @@ class Warcraft(commands.Cog):
         :param count: Max number of runs to return, default 4, max 10.
         :return: An embed with dungeons sorted high to low
         """
-        runs = await WeeklyGuildRunsInterface.get_player_runs(name.lower())
+        runs = await WarcraftCharacterWeeklyRunsInterface.get_player_runs(name.lower())
         if count > 10:
             count = 10
         try:
@@ -550,7 +549,7 @@ class Warcraft(commands.Cog):
     @commands.command(hidden=True)
     async def reset(self, ctx):
         if (await WarcraftCharacterInterface.reset_keys() and
-                await WeeklyGuildRunsInterface.reset_runs()):
+                await WarcraftCharacterWeeklyRunsInterface.reset_runs()):
             await ctx.send('Weekly reset, keys and weekly runs reset. Wish you '
                            'good loot and stable connect!')
         else:
@@ -698,7 +697,7 @@ class Warcraft(commands.Cog):
             dungeon_name = dungeon['dungeon']
             dungeon_level = dungeon['mythic_level']
             run_id = dungeon['url'].split('/')[5].split('-')[0]
-            await WeeklyGuildRunsInterface.add_run(
+            await WarcraftCharacterWeeklyRunsInterface.add_run(
                 run_id, raiderio_data['name'], dungeon_name, dungeon_level
             )
 
@@ -938,7 +937,7 @@ class Warcraft(commands.Cog):
         for char in guild_members:
             total_ilvl += char.ilvl
             member_count += 1
-            num_runs = len(await WeeklyGuildRunsInterface.get_player_runs(char.name.lower()))
+            num_runs = len(await WarcraftCharacterWeeklyRunsInterface.get_player_runs(char.name.lower()))
             output += (
                 f'{char.name.title():{name_col_width}}{col_sep}'
                 f'{char.m_plus_weekly_high:<{mplus_col_width}}{col_sep}'
@@ -984,7 +983,7 @@ class Warcraft(commands.Cog):
                     embed.add_field(
                         name=f'\U00002b50 {i+1}) {run.dungeon_name}'
                         f'+{run.dungeon_level}',
-                        value=(f'https://raider.io/mythic-plus-runs/season-bfa-4-post/'
+                        value=(f'https://raider.io/mythic-plus-runs/sl-season-1/'
                                f'{run.run_id}'),
                         inline=False
                     )
@@ -992,7 +991,7 @@ class Warcraft(commands.Cog):
                     embed.add_field(
                         name=f'\U00002b50 {i+1}) {run.dungeon_name}'
                         f'+{run.dungeon_level}',
-                        value=(f'https://raider.io/mythic-plus-runs/season-bfa-4-post/'
+                        value=(f'https://raider.io/mythic-plus-runs/sl-season-1/'
                                f'{run.run_id}'),
                         inline=False
                     )
@@ -1000,7 +999,7 @@ class Warcraft(commands.Cog):
                     embed.add_field(
                         name=f'\U00002b50 {i+1}) {run.dungeon_name}'
                         f'+{run.dungeon_level}',
-                        value=(f'https://raider.io/mythic-plus-runs/season-bfa-4-post/'
+                        value=(f'https://raider.io/mythic-plus-runs/sl-season-1/'
                                f'{run.run_id}'),
                         inline=False
                     )
@@ -1008,7 +1007,7 @@ class Warcraft(commands.Cog):
                     embed.add_field(
                             name=f'{i+1}) {run.dungeon_name} '
                             f'+{run.dungeon_level}',
-                            value=(f'https://raider.io/mythic-plus-runs/season-bfa-4-post/'
+                            value=(f'https://raider.io/mythic-plus-runs/sl-season-1/'
                                    f'{run.run_id}'),
                             inline=False
                         )

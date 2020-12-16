@@ -1,20 +1,15 @@
-from datetime import datetime
-from urllib import parse
-
-from sqlalchemy import desc, asc, delete
-
-from database.db_models import WeeklyGuildMplusRuns
-from database.db_engine_session_initialization import Session
+from cogs.warcraft.database.db_models import WarcraftCharacterWeeklyRun
+from cogs.warcraft.database.db_engine_session_init import Session
 
 
-class WeeklyGuildRunsInterface:
+class WarcraftCharacterWeeklyRunsInterface:
     @classmethod
     async def add_run(cls, run_id, character_name, dungeon_name, dungeon_level):
         session = Session()
-        existing_run = session.query(WeeklyGuildMplusRuns).filter_by(
+        existing_run = session.query(WarcraftCharacterWeeklyRun).filter_by(
             run_id=run_id, character_name=character_name.lower()).first()
         if existing_run is None:
-            new_run = WeeklyGuildMplusRuns()
+            new_run = WarcraftCharacterWeeklyRun()
             new_run.run_id = run_id
             new_run.character_name = character_name.lower()
             new_run.dungeon_name = dungeon_name
@@ -34,7 +29,7 @@ class WeeklyGuildRunsInterface:
     @classmethod
     async def get_player_runs(cls, character_name):
         session = Session()
-        runs = session.query(WeeklyGuildMplusRuns).filter_by(
+        runs = session.query(WarcraftCharacterWeeklyRun).filter_by(
             character_name=character_name).all()
         session.close()
         return runs
@@ -42,7 +37,7 @@ class WeeklyGuildRunsInterface:
     @classmethod
     async def reset_runs(cls):
         session = Session()
-        runs = session.query(WeeklyGuildMplusRuns).all()
+        runs = session.query(WarcraftCharacterWeeklyRun).all()
         success = False
         try:
             for r in runs:
